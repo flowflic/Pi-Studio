@@ -63,7 +63,7 @@ Pi Studio 是一个独立的 Electron 桌面客户端，用于运行 [Pi coding 
 - 打包脚本需要全局安装 Pi coding agent：
 
 ```powershell
-npm install -g @earendil-works/pi-coding-agent@0.83.0
+npm install -g @earendil-works/pi-coding-agent@0.84.1
 ```
 
 ## 开发
@@ -84,7 +84,7 @@ npm run dist              # 打包、构建并创建安装包
 npm run pack              # 创建未打包的目录构建产物
 ```
 
-构建产物写入 `release/`。`npm run dist` 会创建包含内置运行时归档的 Electron 安装包；`release/` 中生成的归档会保留用于 QA，不需要单独上传。仓库在 `package.json` 中固定 Pi 运行时版本 `0.83.0`，打包脚本会在创建归档前校验该版本。如需从指定的本地安装位置打包，可将 `PI_PACKAGE_DIR` 设置为对应的 package 目录。
+构建产物写入 `release/`。`npm run dist` 会创建包含内置运行时归档的 Electron 安装包；`release/` 中生成的归档会保留用于 QA，不需要单独上传。仓库在 `package.json` 中固定 Pi 运行时版本 `0.84.1`，打包脚本会在创建归档前校验该版本。如需从指定的本地安装位置打包，可将 `PI_PACKAGE_DIR` 设置为对应的 package 目录。
 
 ## 配置与数据
 

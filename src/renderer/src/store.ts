@@ -271,11 +271,19 @@ function imagesOfContent(content: unknown): { dataUrl: string; mimeType: string 
 function blocksOfContent(content: unknown): ContentBlock[] {
   if (!Array.isArray(content)) return [];
   const out: ContentBlock[] = [];
-  for (const b of content as any[]) {
+  for (const [contentIndex, b] of (content as any[]).entries()) {
     if (!b) continue;
     if (b.type === "text") out.push({ type: "text", text: b.text || "" });
     else if (b.type === "thinking") out.push({ type: "thinking", thinking: b.thinking || "" });
-    else if (b.type === "toolCall") out.push({ type: "toolCall", id: b.id, name: b.name, arguments: b.arguments || {} });
+    else if (b.type === "toolCall") {
+      out.push({
+        type: "toolCall",
+        id: typeof b.id === "string" && b.id ? b.id : `tc-${contentIndex}`,
+        name: typeof b.name === "string" && b.name ? b.name : "tool",
+        arguments: b.arguments || {},
+        contentIndex,
+      });
+    }
   }
   return out;
 }
@@ -300,27 +308,192 @@ function usableToolName(value: unknown): string | undefined {
   return name && name.toLowerCase() !== "tool" ? name : undefined;
 }
 
-function toolBlockById(blocks: ContentBlock[], id: string): Extract<ContentBlock, { type: "toolCall" }> | undefined {
-  return blocks.find((block): block is Extract<ContentBlock, { type: "toolCall" }> => block.type === "toolCall" && block.id === id);
+function isToolContentIndex(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
-function upsertToolBlock(blocks: ContentBlock[], id: string, name: string, args?: unknown): ContentBlock[] {
-  const previous = toolBlockById(blocks, id);
-  const nextName = usableToolName(name) || usableToolName(previous?.name) || previous?.name || "tool";
-  const nextArgs = args && typeof args === "object" && !Array.isArray(args) && Object.keys(args).length > 0
-    ? args
-    : previous?.arguments || {};
-  if (previous) {
-    return blocks.map((block) =>
-      block.type === "toolCall" && block.id === id ? { ...block, name: nextName, arguments: nextArgs } : block,
+function isPlaceholderToolCallId(value: unknown): boolean {
+  return typeof value === "string" && /^tc-\d+$/.test(value);
+}
+
+function hasToolArguments(value: unknown): boolean {
+  return !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length > 0;
+}
+
+function sameToolArguments(left: unknown, right: unknown): boolean {
+  if (!hasToolArguments(left) || !hasToolArguments(right)) return false;
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+}
+
+function toolBlockById(
+  blocks: ContentBlock[],
+  id?: string,
+  contentIndex?: number,
+): Extract<ContentBlock, { type: "toolCall" }> | undefined {
+  if (id) {
+    const byId = blocks.find((block): block is Extract<ContentBlock, { type: "toolCall" }> => block.type === "toolCall" && block.id === id);
+    if (byId) return byId;
+  }
+  if (isToolContentIndex(contentIndex)) {
+    return blocks.find(
+      (block): block is Extract<ContentBlock, { type: "toolCall" }> =>
+        block.type === "toolCall" && block.contentIndex === contentIndex,
     );
   }
-  return [...blocks, { type: "toolCall", id, name: nextName, arguments: nextArgs }];
+  return undefined;
 }
 
-function updateToolBlockName(blocks: ContentBlock[] | undefined, id: string, name: string, args?: unknown): ContentBlock[] | undefined {
+function findToolRun(
+  runs: Record<string, ToolRun>,
+  id?: string,
+  name?: unknown,
+  args?: unknown,
+  contentIndex?: number,
+): { key: string; run: ToolRun } | undefined {
+  if (id && runs[id]) return { key: id, run: runs[id] };
+  const pending = Object.entries(runs).filter(([, run]) => run.completed !== true);
+  if (isToolContentIndex(contentIndex)) {
+    const byContentIndex = pending.find(([, run]) => run.contentIndex === contentIndex);
+    if (byContentIndex) return { key: byContentIndex[0], run: byContentIndex[1] };
+  }
+  if (hasToolArguments(args)) {
+    const byArgs = pending.find(([, run]) => sameToolArguments(run.args, args));
+    if (byArgs) return { key: byArgs[0], run: byArgs[1] };
+  }
+  const usableName = usableToolName(name);
+  if (usableName) {
+    const byName = pending.find(([, run]) => usableToolName(run.name)?.toLowerCase() === usableName.toLowerCase());
+    if (byName) return { key: byName[0], run: byName[1] };
+  }
+  const placeholder = isToolContentIndex(contentIndex) ? undefined : pending.find(([key]) => isPlaceholderToolCallId(key));
+  return placeholder ? { key: placeholder[0], run: placeholder[1] } : undefined;
+}
+
+function renameToolRun(
+  runs: Record<string, ToolRun>,
+  fromId: string | undefined,
+  toId: string,
+  contentIndex?: number,
+): Record<string, ToolRun> {
+  if (!fromId || fromId === toId || !runs[fromId]) return runs;
+  const from = runs[fromId];
+  const to = runs[toId];
+  const merged: ToolRun = {
+    ...from,
+    ...(to || {}),
+    id: toId,
+    name: usableToolName(to?.name) || usableToolName(from.name) || to?.name || from.name || "tool",
+    args: hasToolArguments(to?.args) ? to.args : from.args || to?.args || {},
+    contentIndex: to?.contentIndex ?? from.contentIndex ?? contentIndex,
+    argsStr: to?.argsStr || from.argsStr,
+  };
+  const next = { ...runs };
+  delete next[fromId];
+  next[toId] = merged;
+  return next;
+}
+
+function upsertToolBlock(blocks: ContentBlock[], id: string, name: string, args?: unknown, contentIndex?: number): ContentBlock[] {
+  const previous = toolBlockById(blocks, id, contentIndex);
+  const nextId = id || previous?.id || (isToolContentIndex(contentIndex) ? `tc-${contentIndex}` : `tc-${uid()}`);
+  const nextName = usableToolName(name) || usableToolName(previous?.name) || previous?.name || "tool";
+  const previousArgs = previous?.arguments;
+  const nextArgs = hasToolArguments(args) ? args : hasToolArguments(previousArgs) ? previousArgs : args ?? previousArgs ?? {};
+  if (previous) {
+    const nextBlock = { ...previous, id: nextId, name: nextName, arguments: nextArgs };
+    if (isToolContentIndex(contentIndex)) nextBlock.contentIndex = contentIndex;
+    return blocks.map((block) => (block === previous ? nextBlock : block));
+  }
+  return [
+    ...blocks,
+    {
+      type: "toolCall",
+      id: nextId,
+      name: nextName,
+      arguments: nextArgs,
+      ...(isToolContentIndex(contentIndex) ? { contentIndex } : {}),
+    },
+  ];
+}
+
+function updateToolBlockName(
+  blocks: ContentBlock[] | undefined,
+  id: string,
+  name: string,
+  args?: unknown,
+  contentIndex?: number,
+): ContentBlock[] | undefined {
   if (!blocks) return blocks;
-  return upsertToolBlock(blocks, id, name, args);
+  return upsertToolBlock(blocks, id, name, args, contentIndex);
+}
+
+function updateLatestMessageToolBlock(
+  messages: ViewMessage[],
+  fromId: string | undefined,
+  toId: string,
+  name: string,
+  args?: unknown,
+  contentIndex?: number,
+): ViewMessage[] {
+  const next = [...messages];
+  for (let i = next.length - 1; i >= 0; i--) {
+    const blocks = next[i].blocks;
+    if (!blocks) continue;
+    const hasMatch = blocks.some(
+      (block) =>
+        block.type === "toolCall" &&
+        ((!!fromId && block.id === fromId) || block.id === toId || (isToolContentIndex(contentIndex) && block.contentIndex === contentIndex)),
+    );
+    if (!hasMatch) continue;
+    next[i] = { ...next[i], blocks: upsertToolBlock(blocks, toId, name, args, contentIndex) };
+    break;
+  }
+  return next;
+}
+
+function reconcileAssistantBlocks(
+  previousBlocks: ContentBlock[],
+  finalContent: unknown,
+  runs: Record<string, ToolRun>,
+): { blocks: ContentBlock[]; toolRuns: Record<string, ToolRun> } {
+  const finalBlocks = blocksOfContent(finalContent);
+  if (!finalBlocks.length) return { blocks: previousBlocks, toolRuns: runs };
+  let nextRuns = runs;
+  const blocks = finalBlocks.map((block) => {
+    if (block.type !== "toolCall") return block;
+    const previous = toolBlockById(previousBlocks, block.id, block.contentIndex);
+    const match =
+      findToolRun(nextRuns, block.id, block.name, block.arguments, block.contentIndex) ||
+      findToolRun(nextRuns, previous?.id, previous?.name, previous?.arguments, previous?.contentIndex);
+    const matchedId = match?.key;
+    const realMatchedId = matchedId && !isPlaceholderToolCallId(matchedId) ? matchedId : undefined;
+    const realPreviousId = previous?.id && !isPlaceholderToolCallId(previous.id) ? previous.id : undefined;
+    const id = realMatchedId || realPreviousId || block.id;
+    if (matchedId && matchedId !== id) nextRuns = renameToolRun(nextRuns, matchedId, id, block.contentIndex);
+    const run = nextRuns[id];
+    const name = usableToolName(block.name) || usableToolName(run?.name) || usableToolName(previous?.name) || "tool";
+    const args = hasToolArguments(block.arguments)
+      ? block.arguments
+      : hasToolArguments(run?.args)
+        ? run?.args
+        : previous?.arguments || {};
+    nextRuns = {
+      ...nextRuns,
+      [id]: {
+        ...(run || { id, args: {}, running: false }),
+        id,
+        name,
+        args,
+        contentIndex: block.contentIndex,
+      },
+    };
+    return { ...block, id, name, arguments: args };
+  });
+  return { blocks, toolRuns: nextRuns };
 }
 
 const newAssistant = (key?: string): ViewMessage => ({ key: key || `a-${uid()}`, role: "assistant", blocks: [], timestamp: Date.now() });
@@ -388,6 +561,7 @@ function historyToView(
             name: b.name,
             args: b.arguments,
             running: false,
+            contentIndex: b.contentIndex,
             completed: !!tr,
             isError: tr?.isError,
             resultText: tr?.text,
@@ -513,15 +687,17 @@ function reduceThread(t: ThreadState, event: any): ThreadState {
     case "message_end": {
       const m = event.message;
       if (m?.role === "assistant" && t.streaming) {
+        const reconciled = reconcileAssistantBlocks(t.streaming.blocks || [], m.content, t.toolRuns);
         const final: ViewMessage = {
           ...t.streaming,
+          blocks: reconciled.blocks,
           provider: m.provider || t.streaming.provider,
           model: m.model || t.streaming.model,
           stopReason: m.stopReason,
           errorMessage: m.errorMessage,
           timestamp: m.timestamp || t.streaming.timestamp,
         };
-        return { ...t, streaming: null, messages: [...t.messages, final] };
+        return { ...t, streaming: null, messages: [...t.messages, final], toolRuns: reconciled.toolRuns };
       }
       return t;
     }
@@ -542,14 +718,18 @@ function reduceThread(t: ThreadState, event: any): ThreadState {
           blocks = addThinking(blocks, ame.delta || "");
           break;
         case "toolcall_start": {
-          const ci = ame.contentIndex;
-          const partial = ame.partial?.content?.[ci];
-          const id = ame.toolCall?.id || partial?.id || `tc-${ci ?? uid()}`;
-          const existingBlock = toolBlockById(blocks, id);
+          const ci = isToolContentIndex(ame.contentIndex) ? ame.contentIndex : undefined;
+          const partial = isToolContentIndex(ci) ? ame.partial?.content?.[ci] : undefined;
+          const providedId = typeof ame.toolCall?.id === "string" && ame.toolCall.id ? ame.toolCall.id : typeof partial?.id === "string" && partial.id ? partial.id : undefined;
+          const existingBlock = toolBlockById(blocks, providedId, ci);
+          const existingMatch = findToolRun(runs, providedId, ame.toolCall?.name || partial?.name, ame.toolCall?.arguments || partial?.arguments, ci);
+          const id = providedId || (isToolContentIndex(ci) ? existingMatch?.key || `tc-${ci}` : existingMatch?.key || `tc-${uid()}`);
+          runs = renameToolRun(runs, existingMatch?.key, id, ci);
           const existingRun = runs[id];
           const name = usableToolName(ame.toolCall?.name) || usableToolName(partial?.name) || usableToolName(existingRun?.name) || usableToolName(existingBlock?.name) || "tool";
-          const args = ame.toolCall?.arguments || partial?.arguments || existingRun?.args || existingBlock?.arguments || {};
-          blocks = upsertToolBlock(blocks, id, name, args);
+          const candidateArgs = ame.toolCall?.arguments || partial?.arguments;
+          const args = hasToolArguments(candidateArgs) ? candidateArgs : existingRun?.args || existingBlock?.arguments || {};
+          blocks = upsertToolBlock(blocks, id, name, args, ci);
           runs = {
             ...runs,
             [id]: {
@@ -557,31 +737,58 @@ function reduceThread(t: ThreadState, event: any): ThreadState {
               id,
               name,
               args,
+              contentIndex: ci,
             },
           };
           break;
         }
         case "toolcall_delta": {
-          const id = ame.toolCall?.id || ame.partial?.content?.[ame.contentIndex]?.id;
+          const ci = isToolContentIndex(ame.contentIndex) ? ame.contentIndex : undefined;
+          const partial = isToolContentIndex(ci) ? ame.partial?.content?.[ci] : undefined;
+          const providedId = typeof ame.toolCall?.id === "string" && ame.toolCall.id ? ame.toolCall.id : typeof partial?.id === "string" && partial.id ? partial.id : undefined;
+          const match = findToolRun(runs, providedId, partial?.name, partial?.arguments, ci);
+          const block = toolBlockById(blocks, providedId, ci);
+          const id = providedId || match?.key || block?.id || (isToolContentIndex(ci) ? `tc-${ci}` : undefined);
           if (id) {
-            const block = toolBlockById(blocks, id);
-            const r = runs[id] || { id, name: block?.name || "tool", args: block?.arguments || {}, running: false, argsStr: "" };
-            runs = { ...runs, [id]: { ...r, argsStr: (r.argsStr || "") + (ame.delta || "") } };
+            runs = renameToolRun(runs, match?.key, id, ci);
+            const r = runs[id] || { id, name: block?.name || partial?.name || "tool", args: block?.arguments || partial?.arguments || {}, running: false, argsStr: "" };
+            const name = usableToolName(partial?.name) || usableToolName(r.name) || "tool";
+            const args = hasToolArguments(partial?.arguments) ? partial.arguments : r.args;
+            blocks = upsertToolBlock(blocks, id, name, args, ci);
+            runs = { ...runs, [id]: { ...r, id, name, args, contentIndex: ci, argsStr: (r.argsStr || "") + (ame.delta || "") } };
           }
           break;
         }
         case "toolcall_end": {
-          const id = ame.toolCall?.id || ame.partial?.content?.[ame.contentIndex]?.id;
-          const r = id ? runs[id] : undefined;
-          if (id && r?.argsStr) {
-            try {
-              const parsed = JSON.parse(r.argsStr);
-              const name = usableToolName(ame.toolCall?.name) || r.name || "tool";
-              runs = { ...runs, [id]: { ...r, name, args: parsed } };
-              blocks = upsertToolBlock(blocks, id, name, parsed);
-            } catch {
-              /* leave as-is */
+          const ci = isToolContentIndex(ame.contentIndex) ? ame.contentIndex : undefined;
+          const partial = isToolContentIndex(ci) ? ame.partial?.content?.[ci] : undefined;
+          const providedId = typeof ame.toolCall?.id === "string" && ame.toolCall.id ? ame.toolCall.id : typeof partial?.id === "string" && partial.id ? partial.id : undefined;
+          const match = findToolRun(runs, providedId, ame.toolCall?.name || partial?.name, ame.toolCall?.arguments || partial?.arguments, ci);
+          const initialId = providedId || match?.key || (isToolContentIndex(ci) ? `tc-${ci}` : undefined);
+          if (initialId) {
+            runs = renameToolRun(runs, match?.key, initialId, ci);
+            const r = runs[initialId];
+            let parsed: unknown = ame.toolCall?.arguments || partial?.arguments;
+            if (!hasToolArguments(parsed) && r?.argsStr) {
+              try {
+                parsed = JSON.parse(r.argsStr);
+              } catch {
+                /* Keep the last parsed arguments when the delta is incomplete. */
+              }
             }
+            const args = hasToolArguments(parsed) ? parsed : r?.args || {};
+            const name = usableToolName(ame.toolCall?.name) || usableToolName(partial?.name) || usableToolName(r?.name) || "tool";
+            blocks = upsertToolBlock(blocks, initialId, name, args, ci);
+            runs = {
+              ...runs,
+              [initialId]: {
+                ...(r || { id: initialId, running: false }),
+                id: initialId,
+                name,
+                args,
+                contentIndex: ci,
+              },
+            };
           }
           break;
         }
@@ -592,57 +799,74 @@ function reduceThread(t: ThreadState, event: any): ThreadState {
       return { ...t, streaming: { ...s, blocks }, toolRuns: runs };
     }
     case "tool_execution_start": {
-      const id = event.toolCallId;
+      const id = typeof event.toolCallId === "string" ? event.toolCallId : "";
       if (!id) return t;
-      const prev = t.toolRuns[id] || { id, name: event.toolName || "tool", args: {}, running: false };
+      const match = findToolRun(t.toolRuns, id, event.toolName, event.args);
+      let toolRuns = renameToolRun(t.toolRuns, match?.key, id, match?.run?.contentIndex);
+      const prev = toolRuns[id] || { id, name: event.toolName || "tool", args: {}, running: false };
       const name = usableToolName(event.toolName) || usableToolName(prev.name) || "tool";
-      const args = event.args && typeof event.args === "object" ? event.args : prev.args;
+      const args = hasToolArguments(event.args) ? event.args : prev.args;
+      const contentIndex = prev.contentIndex ?? match?.run?.contentIndex;
+      const updated = {
+        ...prev,
+        id,
+        name,
+        args,
+        contentIndex,
+        running: true,
+        completed: false,
+        isError: false,
+        startedAt: prev.startedAt || Date.now(),
+        endedAt: undefined,
+      };
       return {
         ...t,
-        streaming: t.streaming ? { ...t.streaming, blocks: updateToolBlockName(t.streaming.blocks, id, name, args) } : t.streaming,
-        toolRuns: {
-          ...t.toolRuns,
-          [id]: {
-            ...prev,
-            name,
-            args,
-            running: true,
-            completed: false,
-            isError: false,
-            startedAt: prev.startedAt || Date.now(),
-            endedAt: undefined,
-          },
-        },
+        messages: updateLatestMessageToolBlock(t.messages, match?.key, id, name, args, contentIndex),
+        streaming: t.streaming ? { ...t.streaming, blocks: updateToolBlockName(t.streaming.blocks, id, name, args, contentIndex) } : t.streaming,
+        toolRuns: { ...toolRuns, [id]: updated },
       };
     }
     case "tool_execution_update": {
-      const id = event.toolCallId;
+      const id = typeof event.toolCallId === "string" ? event.toolCallId : "";
       if (!id) return t;
-      const prev = t.toolRuns[id] || { id, name: event.toolName || "tool", args: {}, running: true };
+      const match = findToolRun(t.toolRuns, id, event.toolName, event.args);
+      let toolRuns = renameToolRun(t.toolRuns, match?.key, id, match?.run?.contentIndex);
+      const prev = toolRuns[id] || { id, name: event.toolName || "tool", args: {}, running: true };
       const name = usableToolName(event.toolName) || usableToolName(prev.name) || "tool";
+      const args = hasToolArguments(event.args) ? event.args : prev.args;
+      const contentIndex = prev.contentIndex ?? match?.run?.contentIndex;
       return {
         ...t,
-        streaming: t.streaming ? { ...t.streaming, blocks: updateToolBlockName(t.streaming.blocks, id, name, prev.args) } : t.streaming,
+        messages: updateLatestMessageToolBlock(t.messages, match?.key, id, name, args, contentIndex),
+        streaming: t.streaming ? { ...t.streaming, blocks: updateToolBlockName(t.streaming.blocks, id, name, args, contentIndex) } : t.streaming,
         toolRuns: {
-          ...t.toolRuns,
-          [id]: { ...prev, name, partialText: textOfContent(event.partialResult?.content), startedAt: prev.startedAt || Date.now() },
+          ...toolRuns,
+          [id]: { ...prev, id, name, args, contentIndex, partialText: textOfContent(event.partialResult?.content), startedAt: prev.startedAt || Date.now() },
         },
       };
     }
     case "tool_execution_end": {
-      const id = event.toolCallId;
+      const id = typeof event.toolCallId === "string" ? event.toolCallId : "";
       if (!id) return t;
-      const prev = t.toolRuns[id] || { id, name: event.toolName || "tool", args: {}, running: false };
+      const match = findToolRun(t.toolRuns, id, event.toolName, event.args);
+      let toolRuns = renameToolRun(t.toolRuns, match?.key, id, match?.run?.contentIndex);
+      const prev = toolRuns[id] || { id, name: event.toolName || "tool", args: {}, running: false };
       const name = usableToolName(event.toolName) || usableToolName(prev.name) || "tool";
+      const args = hasToolArguments(event.args) ? event.args : prev.args;
+      const contentIndex = prev.contentIndex ?? match?.run?.contentIndex;
       const endedAt = Date.now();
       return {
         ...t,
-        streaming: t.streaming ? { ...t.streaming, blocks: updateToolBlockName(t.streaming.blocks, id, name, prev.args) } : t.streaming,
+        messages: updateLatestMessageToolBlock(t.messages, match?.key, id, name, args, contentIndex),
+        streaming: t.streaming ? { ...t.streaming, blocks: updateToolBlockName(t.streaming.blocks, id, name, args, contentIndex) } : t.streaming,
         toolRuns: {
-          ...t.toolRuns,
+          ...toolRuns,
           [id]: {
             ...prev,
+            id,
             name,
+            args,
+            contentIndex,
             running: false,
             completed: true,
             isError: !!event.isError,

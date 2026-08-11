@@ -63,7 +63,7 @@ Each installer contains a native pinned Node.js + Pi runtime. On first launch, P
 - A global Pi coding agent installation is required by the packaging script:
 
 ```powershell
-npm install -g @earendil-works/pi-coding-agent@0.83.0
+npm install -g @earendil-works/pi-coding-agent@0.84.1
 ```
 
 ## Development
@@ -84,7 +84,7 @@ npm run dist              # Bundle, build, and create the installer
 npm run pack              # Create an unpacked directory build
 ```
 
-Build output is written to `release/`. `npm run dist` creates the Electron installer with the runtime archive embedded inside it; the generated archive in `release/` is retained for QA and does not need to be uploaded separately. The repository pins Pi runtime `0.83.0` in `package.json`, and the packaging script verifies that version before creating the archive. To package from a specific local installation, set `PI_PACKAGE_DIR` to its package directory.
+Build output is written to `release/`. `npm run dist` creates the Electron installer with the runtime archive embedded inside it; the generated archive in `release/` is retained for QA and does not need to be uploaded separately. The repository pins Pi runtime `0.84.1` in `package.json`, and the packaging script verifies that version before creating the archive. To package from a specific local installation, set `PI_PACKAGE_DIR` to its package directory.
 
 ## Configuration and data
 

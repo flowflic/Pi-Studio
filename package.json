@@ -1,7 +1,7 @@
 {
   "name": "pi-studio",
-  "version": "0.3.2",
-  "piRuntimeVersion": "0.83.0",
+  "version": "0.3.3",
+  "piRuntimeVersion": "0.84.1",
   "private": true,
   "license": "MIT",
   "author": {

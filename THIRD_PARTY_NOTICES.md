@@ -9,7 +9,7 @@ When redistributing a built application, keep this notice together with the appl
 ### Pi coding agent
 
 - Package: `@earendil-works/pi-coding-agent`
-- Version in the current embedded runtime: `0.83.0`
+- Version in the current embedded runtime: `0.84.1`
 - License: MIT
 - Copyright: Mario Zechner
 - Source: <https://github.com/earendil-works/pi/tree/main/packages/coding-agent>

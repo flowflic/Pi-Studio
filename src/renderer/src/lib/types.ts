@@ -122,7 +122,7 @@ export interface ModelInfo {
 export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; thinking: string }
-  | { type: "toolCall"; id: string; name: string; arguments: any };
+  | { type: "toolCall"; id: string; name: string; arguments: any; contentIndex?: number };
 
 export interface ViewMessage {
   /** stable key */
@@ -150,6 +150,8 @@ export interface ToolRun {
   name: string;
   args: any;
   running: boolean;
+  /** Assistant content index used to reconcile provider calls before an ID exists. */
+  contentIndex?: number;
   /** True after Pi emits a tool result, including an empty successful result. */
   completed?: boolean;
   isError?: boolean;

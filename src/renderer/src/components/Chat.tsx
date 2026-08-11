@@ -728,8 +728,8 @@ function renderAssistantBlocks(items: ViewMessage[], toolRuns: Record<string, To
 function BlockView({ block, toolRuns }: { block: ContentBlock; toolRuns: Record<string, ToolRun> }) {
   if (block.type === "text") return <Markdown text={block.text} />;
   if (block.type === "thinking") return <Thinking text={block.thinking} />;
-  const run = toolRuns[block.id];
-  return <ToolCard id={block.id} name={effectiveToolName(block.name, run)} run={run} />;
+  const run = toolRuns[block.id] || (block.contentIndex === undefined ? undefined : Object.values(toolRuns).find((candidate) => candidate.contentIndex === block.contentIndex));
+  return <ToolCard id={block.id} name={effectiveToolName(block.name, run)} blockArgs={block.arguments} run={run} />;
 }
 
 const SkillInvocation = memo(function SkillInvocation({ name }: { name: string }) {
@@ -771,7 +771,7 @@ function toolStatus(run?: ToolRun): ToolStatus {
   if (!run) return "queued";
   if (run.running) return "running";
   if (run.isError) return "error";
-  if (run.completed) return "done";
+  if (run.completed === true) return "done";
   return "queued";
 }
 
@@ -784,8 +784,8 @@ function firstLine(value: unknown, maxLength = 120): string {
   return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
 }
 
-function toolSummary(name: string, run?: ToolRun): string {
-  const args = parseToolArgs(run);
+function toolSummary(name: string, run?: ToolRun, fallbackArgs?: unknown): string {
+  const args = parseToolArgs(run, fallbackArgs);
   const command = toolArg(args, ["command", "cmd", "script"]);
   if (typeof command === "string" && command.trim()) return firstLine(command);
 
@@ -811,21 +811,22 @@ function toolDuration(run?: ToolRun): string {
   return seconds < 1 ? "<1s" : `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
 }
 
-const ToolCard = memo(function ToolCard({ id, name, run }: { id: string; name: string; run?: ToolRun }) {
+const ToolCard = memo(function ToolCard({ id, name, blockArgs, run }: { id: string; name: string; blockArgs?: unknown; run?: ToolRun }) {
   const [open, setOpen] = useState(false);
   const running = run?.running;
-  const argsView = renderToolArgs(name, run);
+  const argsView = renderToolArgs(name, run, blockArgs);
   const result = run?.resultText ?? run?.partialText ?? "";
   const status = toolStatus(run);
-  const summary = toolSummary(name, run);
+  const summary = toolSummary(name, run, blockArgs);
   const duration = toolDuration(run);
   const detailsId = `tool-details-${id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-  const showOutput = Boolean(run?.running || run?.completed || run?.isError || result);
   const emptyMessage = !run
     ? "Waiting for execution data"
     : running
       ? "Output will appear here while the tool runs"
-      : "No output returned";
+      : run.completed !== true && !run.isError
+        ? "Queued — execution has not started"
+        : "No output returned";
   return (
     <div className={`tool-card state-${status} ${open ? "is-open" : ""}`}>
       <button
@@ -845,25 +846,20 @@ const ToolCard = memo(function ToolCard({ id, name, run }: { id: string; name: s
       </button>
       {open && (
         <div className="tool-details" id={detailsId}>
-          {argsView && (
-            <section className="tool-section">
-              <div className="tool-section-label">Arguments</div>
-              <div className="tool-args">{argsView}</div>
-            </section>
-          )}
-          {showOutput && (
-            <section className="tool-section">
-              <div className="tool-section-label">Output</div>
-              {result ? (
-                <div className={`tool-result ${run?.isError ? "err" : ""}`}>
-                  <ToolCode text={normalizeTranscriptText(result)} language={languageForResult(name, run)} />
-                </div>
-              ) : (
-                <div className="tool-empty compact">{emptyMessage}</div>
-              )}
-            </section>
-          )}
-          {!argsView && !showOutput && <div className="tool-empty">{emptyMessage}</div>}
+          <section className="tool-section">
+            <div className="tool-section-label">Arguments</div>
+            <div className="tool-args">{argsView || <div className="tool-empty compact">Arguments unavailable</div>}</div>
+          </section>
+          <section className="tool-section">
+            <div className="tool-section-label">Output</div>
+            {result ? (
+              <div className={`tool-result ${run?.isError ? "err" : ""}`}>
+                <ToolCode text={normalizeTranscriptText(result)} language={languageForResult(name, run, blockArgs)} />
+              </div>
+            ) : (
+              <div className="tool-empty compact">{emptyMessage}</div>
+            )}
+          </section>
         </div>
       )}
     </div>
@@ -904,8 +900,8 @@ function normalizeTranscriptText(value: unknown): string {
   return text;
 }
 
-function parseToolArgs(run?: ToolRun): Record<string, unknown> | null {
-  const candidate = run?.args;
+function parseToolArgs(run?: ToolRun, fallbackArgs?: unknown): Record<string, unknown> | null {
+  const candidate = run?.args && hasToolArgumentObject(run.args) && Object.keys(run.args).length > 0 ? run.args : fallbackArgs ?? run?.args;
   if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
     if (Object.keys(candidate).length > 0 || !run?.argsStr) return candidate as Record<string, unknown>;
   }
@@ -918,6 +914,10 @@ function parseToolArgs(run?: ToolRun): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+function hasToolArgumentObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function toolArg(args: Record<string, unknown> | null, names: string[]): unknown {
@@ -974,10 +974,10 @@ function languageForTool(name: string): string | undefined {
   return undefined;
 }
 
-function languageForResult(name: string, run?: ToolRun): string | undefined {
+function languageForResult(name: string, run?: ToolRun, fallbackArgs?: unknown): string | undefined {
   const toolLanguage = languageForTool(name);
   if (toolLanguage) return toolLanguage;
-  const args = parseToolArgs(run);
+  const args = parseToolArgs(run, fallbackArgs);
   const path = toolArg(args, ["path", "filePath", "file_path", "filename", "file"]);
   return typeof path === "string" ? languageForPath(normalizeTranscriptText(path)) : undefined;
 }
@@ -993,17 +993,32 @@ function ToolCode({ text, language }: { text: string; language?: string }) {
   return <Markdown text={codeFence(text, language)} />;
 }
 
-function renderToolArgs(name: string, run?: ToolRun): ReactNode {
-  if (!run) return null;
-  const args = parseToolArgs(run);
+function renderToolArgs(name: string, run?: ToolRun, fallbackArgs?: unknown): ReactNode {
+  const args = parseToolArgs(run, fallbackArgs);
   const command = toolArg(args, ["command", "cmd", "script"]);
   if (matchesTool(name, ["bash", "shell", "sh", "zsh", "exec", "execute", "command", "run", "python"])) {
-    const text = typeof command === "string" ? normalizeTranscriptText(command) : typeof run.argsStr === "string" ? normalizeTranscriptText(run.argsStr) : "";
+    const text = typeof command === "string" ? normalizeTranscriptText(command) : typeof run?.argsStr === "string" ? normalizeTranscriptText(run.argsStr) : "";
     return text ? <ToolCode text={text} language={languageForTool(name)} /> : null;
   }
 
   const isEdit = matchesTool(name, ["edit", "patch", "replace", "update"]);
   const isWrite = matchesTool(name, ["write", "create", "save", "export"]);
+  const isRead = matchesTool(name, ["read", "cat", "file"]);
+  if (isRead && args && Object.keys(args).length > 0) {
+    const path = normalizeTranscriptText(toolArg(args, ["path", "filePath", "file_path", "filename", "file"]));
+    let generic = "";
+    try {
+      generic = JSON.stringify(args, null, 2);
+    } catch {
+      generic = String(args);
+    }
+    return (
+      <div className="tool-operation">
+        <div className="tool-operation-title">Read{path ? ` · ${path}` : ""}</div>
+        <ToolCode text={generic} language="json" />
+      </div>
+    );
+  }
   if (isEdit || isWrite) {
     const path = normalizeTranscriptText(toolArg(args, ["path", "filePath", "file_path", "filename", "file"]));
     const oldText = normalizeTranscriptText(toolArg(args, ["oldText", "old_text", "old", "before", "original"]));
@@ -1028,7 +1043,7 @@ function renderToolArgs(name: string, run?: ToolRun): ReactNode {
         </div>,
       );
     }
-    if (!sections.length && run.argsStr) {
+    if (!sections.length && run?.argsStr) {
       return <ToolCode text={normalizeTranscriptText(run.argsStr)} language="json" />;
     }
     if (!sections.length && !path) return null;
@@ -1050,5 +1065,5 @@ function renderToolArgs(name: string, run?: ToolRun): ReactNode {
     return <ToolCode text={generic} language="json" />;
   }
 
-  return run.argsStr ? <ToolCode text={normalizeTranscriptText(run.argsStr)} language="json" /> : null;
+  return run?.argsStr ? <ToolCode text={normalizeTranscriptText(run.argsStr)} language="json" /> : null;
 }
