@@ -141,10 +141,12 @@ jobs:
         run: |
           set -euo pipefail
           tag="$GITHUB_REF_NAME"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" release-upload/* --clobber
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" release-upload/* --repo "$GITHUB_REPOSITORY" --clobber
           else
             gh release create "$tag" release-upload/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
               --title "Pi Studio $tag" \
               --generate-notes
           fi
