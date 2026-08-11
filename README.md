@@ -1,8 +1,40 @@
 # Pi Studio
 
+[English](README.md) · [简体中文](README.zh-CN.md)
+
 Pi Studio is an independent Electron desktop client for the [Pi coding agent](https://github.com/earendil-works/pi). It brings Pi projects, threads, model configuration, extensions, permission controls, automation, and file previews into one desktop workspace.
 
 > Pi Studio is an independent community project. It is not affiliated with or endorsed by the Pi maintainers.
+
+## Screenshots
+
+The current interface brings the main workspace, plugin manager, public Skills Hub, and Android remote-control settings into one desktop client.
+
+<table>
+  <tr>
+    <td width="50%"><img src="imageassets/newpi01.png" alt="Pi Studio home workspace" width="100%"></td>
+    <td width="50%"><img src="imageassets/newpi03.png" alt="Pi Studio plugin manager" width="100%"></td>
+  </tr>
+  <tr>
+    <td align="center">Home workspace</td>
+    <td align="center">Plugin manager</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="imageassets/newpi04.png" alt="Pi Studio Skills Hub" width="100%"></td>
+    <td width="50%"><img src="imageassets/newpi02.png" alt="Pi Studio Android remote-control settings" width="100%"></td>
+  </tr>
+  <tr>
+    <td align="center">Skills Hub</td>
+    <td align="center">Android remote-control settings</td>
+  </tr>
+</table>
+
+## Recent additions
+
+- **Plugin manager** — Search, install, update, enable, disable, and remove Pi extension packages from npm, GitHub, or local paths. The same panel also lists skills discovered in Pi's shared and project directories.
+- **Skills Hub** — Browse and search the public [skills.sh](https://skills.sh/) directory, inspect a skill's details and install command, and install it directly into Pi.
+- **Android remote companion** — Pair an Android device with a desktop host through a short-lived QR ticket, configure the Signal WSS endpoint, view connection state, and manage trusted devices. The remote transport uses direct WebRTC with STUN discovery; TURN/relay candidates are intentionally rejected.
+- **Bilingual UI** — Switch the desktop UI between English and Simplified Chinese.
 
 ## Features
 
@@ -11,6 +43,8 @@ Pi Studio is an independent Electron desktop client for the [Pi coding agent](ht
 - Read and preview Markdown, HTML, source code, images, and common office documents.
 - Configure providers and models through Pi's shared `models.json` configuration.
 - Use Pi extensions and plugins from the shared Pi agent directory.
+- Browse and install public skills through the integrated Skills Hub.
+- Pair with the Android companion for remote thread viewing and approved controls.
 - Run scheduled automations with an explicit sandbox or full-access permission level.
 - Keep a versioned Pi/Node runtime embedded in each installer and support app-managed runtime updates.
 - Use a permission gate for shell commands, project boundaries, and extension actions.
