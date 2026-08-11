@@ -32,7 +32,9 @@ import { readPreview } from "./preview-service";
 import { getAgentDir, getTotalUsage, type ProjectSummary, readThreadHistory, scanProjects, searchThreads, type ThreadSearchHit } from "./session-store";
 import {
   getAdditionalSkillPaths,
+  getSkillCommands,
   listPackages,
+  listManagedSkills,
   listSkills,
   probePiStartup,
   removePackageEntry,
@@ -239,6 +241,42 @@ function sameDir(a: string, b: string): boolean {
   return norm(a) === norm(b);
 }
 
+/**
+ * Keep the renderer's command list aligned with the skills on disk. Pi is the
+ * command authority, but older RPC responses and disconnected history loads
+ * can omit skill entries. The disk-side list uses the same 0.84.1 discovery
+ * rules, so it is safe to use as a reconciliation source and to remove stale
+ * skill entries after a skill is disabled.
+ */
+function synchronizedCommands(raw: unknown, cwd: string): any[] {
+  const diskSkills = getSkillCommands(cwd);
+  const byName = new Map(diskSkills.map((skill) => [skill.name, skill]));
+  const result: any[] = [];
+  const seen = new Set<string>();
+  const commands = Array.isArray(raw) ? raw : [];
+
+  for (const command of commands) {
+    if (!command || typeof command !== "object" || (command as any).name === "pi-studio-branch-at") continue;
+    if ((command as any).source === "skill") {
+      const name = String((command as any).name || "");
+      const canonical = byName.get(name);
+      if (!canonical || seen.has(name)) continue;
+      seen.add(name);
+      result.push({ ...command, description: canonical.description });
+      continue;
+    }
+    result.push(command);
+  }
+
+  // This also covers a Pi RPC response captured before the skill scan finished.
+  for (const skill of diskSkills) {
+    if (seen.has(skill.name)) continue;
+    seen.add(skill.name);
+    result.push(skill);
+  }
+  return result;
+}
+
 /** Spawn the standby process if there is none. Safe to call anytime. */
 export function ensureWarmBridge(): void {
   if (!warmEnabled || warmHandle || !sendToRenderer) return;
@@ -294,7 +332,7 @@ async function gatherThread(bridge: PiBridge, threadId: string, permission: Perm
     messages: msgRes?.messages ?? [],
     branchMessages: activeBranchMessages(entriesRes),
     models: modelsRes?.models ?? [],
-    commands: (cmdsRes?.commands ?? []).filter((command: any) => command?.name !== "pi-studio-branch-at"),
+    commands: synchronizedCommands(cmdsRes?.commands, bridge.cwd),
     permission,
   };
 }
@@ -628,7 +666,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     }
     // Keep the list useful even when an older Pi RPC omits skill commands.
     for (const skill of listSkills(cwd).slice(0, 300)) {
-      if (skill.enabled) add(skill.name);
+      if (skill.enabled) add(skill.name, skill.description);
     }
     return skills.slice(0, 200);
   }
@@ -1595,7 +1633,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
       messages: hist.messages,
       branchMessages: hist.branchMessages,
       models: [],
-      commands: [],
+      commands: getSkillCommands(hist.cwd || cwd),
       permission,
     };
   });
@@ -1844,7 +1882,8 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   ipcMain.handle("thread:getCommands", async (_e, threadId: string) => {
     const h = bridges.get(threadId);
     if (!h) return { commands: [] };
-    return h.bridge.getCommands();
+    const response: any = await h.bridge.getCommands();
+    return { ...response, commands: synchronizedCommands(response?.commands, h.bridge.cwd) };
   });
 
   ipcMain.handle("thread:extuiResponse", (_e, args: { threadId: string; id: string; payload: Record<string, unknown> }) => {
@@ -1894,7 +1933,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     ensureWarmBridge();
     return { ok: true, output: (res.stdout + res.stderr).trim() };
   });
-  ipcMain.handle("plugins:getSkills", (_e, cwd?: string) => listSkills(typeof cwd === "string" ? cwd : undefined));
+  ipcMain.handle("plugins:getSkills", () => listManagedSkills());
   ipcMain.handle("plugins:setSkillEnabled", (_e, args: { path: string; enabled: boolean }) => {
     setSkillEnabled(args.path, args.enabled);
     // A skill is loaded during pi startup. Recreate the warm spare so newly

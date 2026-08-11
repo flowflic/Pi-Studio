@@ -25,7 +25,6 @@ export interface AppUpdateStatus {
   /** Whether the current process can install and restart the packaged app. */
   installable: boolean;
   downloaded: boolean;
-  note?: string | null;
   error?: string;
 }
 
@@ -98,12 +97,6 @@ function statusFromInfo(current: string, info: UpdateInfo): AppUpdateStatus {
   const supported = isWindowsInstallerSupported() && isWindowsUpdateInfo(info);
   const installable = supported && app.isPackaged;
   const hasUpdate = compareVersions(latest, current) > 0;
-  let note: string | null = "来源：GitHub Releases，由 electron-updater 管理下载和安装";
-  if (supported && !installable) {
-    note = "当前为开发环境，只能检查版本；请使用已安装的 Pi Studio 执行更新";
-  } else if (!supported) {
-    note = "当前平台没有可用的 Pi Studio Windows 安装包";
-  }
 
   return {
     current,
@@ -115,7 +108,6 @@ function statusFromInfo(current: string, info: UpdateInfo): AppUpdateStatus {
     supported,
     installable,
     downloaded: downloadedVersion === latest,
-    note,
     ...(lastUpdaterError ? { error: lastUpdaterError } : {}),
   };
 }
@@ -131,9 +123,6 @@ function emptyStatus(current: string, error?: string): AppUpdateStatus {
     supported: isWindowsInstallerSupported(),
     installable: isPackagedInstallable(),
     downloaded: false,
-    note: isPackagedInstallable()
-      ? "更新源：GitHub Releases"
-      : "当前为开发环境，只能检查版本；请使用已安装的 Pi Studio 执行更新",
     ...(error ? { error } : {}),
   };
 }

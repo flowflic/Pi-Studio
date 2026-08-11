@@ -300,7 +300,7 @@ export interface PiBridgeOptions {
   name?: string;
   /** Absolute paths to extension files loaded for this run (e.g. the sandbox permission gate). */
   extensions?: string[];
-  /** Additional skill directories/files that are outside pi's default locations. */
+  /** Skill directories/files to load explicitly for deterministic discovery. */
   skills?: string[];
   /** Per-thread gate mode file exposed to the gate extension as
    * PI_STUDIO_GATE_MODE_FILE so sandbox/full can be toggled without a restart. */

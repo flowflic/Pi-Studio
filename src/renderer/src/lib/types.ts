@@ -59,6 +59,8 @@ export interface SkillInfo {
   /** The root directory it was discovered under. */
   root: string;
   enabled: boolean;
+  /** The description exposed by Pi for `/skill:<name>`. */
+  description?: string;
 }
 
 /** A public skill returned by the skills.sh directory. */

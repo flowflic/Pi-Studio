@@ -3509,6 +3509,24 @@ textarea.modal-input {
 .set-input.num {
   font-family: var(--mono);
 }
+.set-token-input {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
+.set-token-input .set-input {
+  min-width: 0;
+  flex: 1 1 auto;
+  width: auto;
+}
+.set-token-unit {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 12px;
+}
 .set-keywrap {
   display: flex;
   gap: 6px;

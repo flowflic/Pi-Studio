@@ -12,6 +12,66 @@ import appIconUrl from "../../../../resources/icon.png";
 
 const API_TYPES: ApiType[] = ["openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai"];
 const THINK_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+const TOKENS_PER_K = 1000;
+
+function formatTokenLimitK(tokens?: number): string {
+  const value = Number(tokens);
+  if (!Number.isFinite(value)) return "";
+  return String(Number((value / TOKENS_PER_K).toFixed(3)));
+}
+
+function TokenLimitInput({
+  value,
+  onChange,
+  label,
+  placeholder,
+}: {
+  value?: number;
+  onChange: (value: number | undefined) => void;
+  label: string;
+  placeholder: string;
+}) {
+  const [draft, setDraft] = useState(() => formatTokenLimitK(value));
+  const [editing, setEditing] = useState(false);
+
+  useEffect(() => {
+    if (!editing) setDraft(formatTokenLimitK(value));
+  }, [editing, value]);
+
+  const commit = () => {
+    setEditing(false);
+    const raw = draft.trim();
+    if (raw === "") {
+      onChange(undefined);
+      return;
+    }
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric) && numeric >= 0) {
+      onChange(Math.round(numeric * TOKENS_PER_K));
+    } else {
+      setDraft(formatTokenLimitK(value));
+    }
+  };
+
+  return (
+    <div className="set-token-input" title={label}>
+      <input
+        className="set-input num"
+        type="number"
+        min={0}
+        step={0.1}
+        placeholder={placeholder}
+        value={draft}
+        onFocus={() => setEditing(true)}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        aria-label={label}
+      />
+      <span className="set-token-unit" aria-hidden="true">K</span>
+    </div>
+  );
+}
+
 function supportedThinkingLevels(model?: ModelDef): readonly string[] {
   // This is a desired global default, not the live model capability list.
   // Keep unmapped levels visible so models without an explicit map can still
@@ -297,10 +357,6 @@ function ModelRow({
       setTest({ state: "error", message: error?.message || String(error) });
     }
   };
-  const num = (key: "contextWindow" | "maxTokens") => (e: ChangeEvent<HTMLInputElement>) => {
-    const n = e.target.value;
-    patch({ [key]: n === "" ? undefined : Number(n) } as Partial<ModelDef>);
-  };
   const setInput = (t: "text" | "image", on: boolean) => {
     const cur = new Set<"text" | "image">((m.input || []) as ("text" | "image")[]);
     on ? cur.add(t) : cur.delete(t);
@@ -321,8 +377,18 @@ function ModelRow({
           <input type="checkbox" checked={has("image")} onChange={(e) => setInput("image", e.target.checked)} />
           <span>图像</span>
         </label>
-        <input className="set-input num" type="number" min={0} step={1024} placeholder="上下文 128000" value={m.contextWindow ?? ""} onChange={num("contextWindow")} title="上下文长度 (tokens)" />
-        <input className="set-input num" type="number" min={0} step={1024} placeholder="最大输出 16384" value={m.maxTokens ?? ""} onChange={num("maxTokens")} title="最大输出 tokens" />
+        <TokenLimitInput
+          value={m.contextWindow}
+          onChange={(value) => patch({ contextWindow: value })}
+          label={language === "zh" ? "上下文长度（K tokens）" : "Context length (K tokens)"}
+          placeholder="128"
+        />
+        <TokenLimitInput
+          value={m.maxTokens}
+          onChange={(value) => patch({ maxTokens: value })}
+          label={language === "zh" ? "最大输出（K tokens）" : "Max output (K tokens)"}
+          placeholder="16"
+        />
         <button className="set-iconbtn" title="高级" onClick={() => setAdv((v) => !v)}>
           ⚙
         </button>
@@ -628,7 +694,6 @@ export function Settings() {
     supported: boolean;
     installable: boolean;
     downloaded: boolean;
-    note?: string | null;
     error?: string;
   } | null>(null);
   const [appUpdateProgress, setAppUpdateProgress] = useState<{ stage: string; message: string; pct?: number } | null>(null);
@@ -1393,7 +1458,6 @@ export function Settings() {
                     <div className="set-diag-k">{language === "zh" ? "来源" : "Source"}</div>
                     <div className="set-diag-v">GitHub Releases</div>
                   </div>
-                  {appUpdateStatus?.note && <div className="set-hint" style={{ marginBottom: 12 }}>{appUpdateStatus.note}</div>}
                   <div className="set-diag-btns">
                     <button className="set-btn ghost" onClick={checkAppRelease} disabled={appUpdating}>
                       {appUpdating && appUpdateProgress?.stage === "checking"

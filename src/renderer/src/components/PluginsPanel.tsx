@@ -356,8 +356,8 @@ export function PluginsPanel() {
         {hubOpen ? <SkillsHubPanel installedSkills={skills} language={language} /> : <div className="plugins-body">
           <div className="muted plugins-note">
             {zh
-              ? "开关写入 ~/.pi/agent/settings.json，与终端 pi 共享；自动扫描 ~/.pi/agent/skills、~/.pi/agent/skill 和当前项目的 .pi skill 目录。"
-              : "Changes are written to ~/.pi/agent/settings.json and shared with terminal Pi. Pi scans ~/.pi/agent/skills, ~/.pi/agent/skill, and the current project's .pi skill folders."}
+              ? "开关写入 ~/.pi/agent/settings.json，与终端 pi 共享；显示 ~/.pi/agent/skills 和 ~/.agents/skills，Pi 目录同名 skill 优先。"
+              : "Changes are written to ~/.pi/agent/settings.json and shared with terminal Pi. Pi Studio displays ~/.pi/agent/skills and ~/.agents/skills; Pi skills win duplicate names."}
           </div>
 
           <div className="plugins-toolbar">
@@ -451,7 +451,7 @@ export function PluginsPanel() {
               {normalizedQuery ? ` / ${skills.length}` : ""})
             </div>
             {loading && skills.length === 0 && <div className="set-empty-mini">{zh ? "加载中…" : "Loading…"}</div>}
-            {!loading && skills.length === 0 && <div className="set-empty-mini">{zh ? "未在 ~/.pi/agent/skills 等目录发现独立 skill。" : "No standalone skills found in ~/.pi/agent/skills or other skill folders."}</div>}
+            {!loading && skills.length === 0 && <div className="set-empty-mini">{zh ? "未在 ~/.pi/agent/skills 或 ~/.agents/skills 目录发现独立 skill。" : "No standalone skills found in ~/.pi/agent/skills or ~/.agents/skills."}</div>}
             {skills.length > 0 && filteredSkills.length === 0 && <div className="set-empty-mini">{zh ? "没有匹配的 skill。" : "No matching skills."}</div>}
             {filteredSkills.map((sk) => (
               <div className="plugins-row" key={sk.path}>

@@ -261,16 +261,16 @@ export function Composer({ threadId }: { threadId: string }) {
   );
   const commandItems = useMemo(() => {
     const query = commandQuery.trim().toLowerCase();
-    return (commands || [])
-      .filter((command: any) => {
-        const rawName = String(command.name || "");
-        const displayName = command.source === "skill" ? rawName.replace(/^skill:/, "") : rawName;
-        const haystack = [rawName, displayName, String(command.description || ""), String(command.source || "")]
-          .join(" ")
-          .toLowerCase();
-        return !query || haystack.includes(query);
-      })
-      .slice(0, 50);
+    // The command popup is already scrollable; keep the complete collection
+    // so commands that appear later in the list remain reachable without a search.
+    return (commands || []).filter((command: any) => {
+      const rawName = String(command.name || "");
+      const displayName = command.source === "skill" ? rawName.replace(/^skill:/, "") : rawName;
+      const haystack = [rawName, displayName, String(command.description || ""), String(command.source || "")]
+        .join(" ")
+        .toLowerCase();
+      return !query || haystack.includes(query);
+    });
   }, [commands, commandQuery]);
   const slashMenuOpen = !!slashMatch && !slashDismissed && slashItems.length > 0;
 

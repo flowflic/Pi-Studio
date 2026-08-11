@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { getConfig } from "./config";
 import { resolvePiRuntime } from "./pi-bridge";
 import { getAgentDir } from "./session-store";
@@ -32,6 +32,8 @@ export interface SkillInfo {
   path: string;
   root: string;
   enabled: boolean;
+  /** The description Pi uses for the corresponding `/skill:<name>` command. */
+  description?: string;
 }
 
 type PackageEntry = string | { source: string; autoload?: boolean; [k: string]: unknown };
@@ -227,24 +229,18 @@ function pathKey(path: string): string {
 /**
  * Pi's native locations are `~/.pi/agent/skills` and `<project>/.pi/skills`.
  * Keep the singular `skill` variants for existing local installs, and include
- * the commonly used `~/.agents/skills` location. The latter is passed to pi as
- * an explicit skill path so the Plugins list and Commands menu describe the
- * same runtime.
+ * the commonly used `~/.agents/skills` location. The order is intentional: it
+ * mirrors Pi's native roots followed by the extra `--skill` roots, so a skill
+ * name collision has the same winner in the Plugins panel and in `get_commands`.
  */
 function skillRoots(cwd?: string): string[] {
-  const roots = [
-    join(getAgentDir(), "skills"),
-    join(getAgentDir(), "skill"),
-    join(homedir(), ".agents", "skills"),
-    join(homedir(), ".agents", "skill"),
-  ];
+  const roots = [join(getAgentDir(), "skills")];
   if (cwd) {
-    roots.push(
-      join(cwd, ".pi", "skills"),
-      join(cwd, ".pi", "skill"),
-      join(cwd, ".pi", "agent", "skills"),
-      join(cwd, ".pi", "agent", "skill"),
-    );
+    roots.push(join(cwd, ".pi", "skills"));
+  }
+  roots.push(join(getAgentDir(), "skill"), join(homedir(), ".agents", "skills"), join(homedir(), ".agents", "skill"));
+  if (cwd) {
+    roots.push(join(cwd, ".pi", "skill"), join(cwd, ".pi", "agent", "skills"), join(cwd, ".pi", "agent", "skill"));
   }
   const seen = new Set<string>();
   return roots.filter((root) => {
@@ -255,26 +251,122 @@ function skillRoots(cwd?: string): string[] {
   });
 }
 
-/** Return non-default skill directories that must be passed to `pi --skill`. */
+/** Return every configured skill root that should be passed to `pi --skill`.
+ * Pi also scans its native roots, but explicit paths make the desktop command
+ * list and project skill loading deterministic; Pi deduplicates repeated files
+ * when an explicit root is also a native root. */
 export function getAdditionalSkillPaths(cwd?: string): string[] {
-  const nativeRoots = new Set<string>([pathKey(join(getAgentDir(), "skills"))]);
-  if (cwd) nativeRoots.add(pathKey(join(cwd, ".pi", "skills")));
-  return skillRoots(cwd).filter((root) => existsSync(root) && !nativeRoots.has(pathKey(root)));
+  return skillRoots(cwd).filter((root) => existsSync(root));
 }
 
-export function listSkills(cwd?: string): SkillInfo[] {
-  const out: SkillInfo[] = [];
-  const seen = new Set<string>();
+interface SkillFrontmatter {
+  name?: string;
+  description?: string;
+}
 
-  const add = (name: string, path: string, root: string, enabled: boolean) => {
-    const key = pathKey(path);
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push({ name, path, root, enabled });
+/**
+ * Read the small part of SKILL.md frontmatter that determines its command.
+ * Pi uses a YAML parser, but skill names are scalar values and descriptions
+ * are either scalar or `>`/`|` blocks. Keeping this parser local avoids making
+ * the Electron shell depend on the bundled Pi runtime's internal modules while
+ * still matching the fields that control discovery.
+ */
+function readSkillFrontmatter(filePath: string): SkillFrontmatter | null {
+  let markdown: string;
+  try {
+    markdown = readFileSync(filePath, "utf8").replace(/\r\n?/g, "\n");
+  } catch {
+    return null;
+  }
+
+  if (!markdown.startsWith("---")) return {};
+  const end = markdown.indexOf("\n---", 3);
+  if (end < 0) return {};
+
+  const lines = markdown.slice(4, end).split("\n");
+  let name: string | undefined;
+  let description: string | undefined;
+  let blockMode: "fold" | "literal" | null = null;
+  let blockLines: string[] = [];
+
+  const unquote = (value: string): string => {
+    const trimmed = value.trim();
+    if (trimmed.length >= 2 && trimmed.startsWith("'") && trimmed.endsWith("'")) {
+      return trimmed.slice(1, -1).replace(/''/g, "'");
+    }
+    if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
+      try {
+        return JSON.parse(trimmed) as string;
+      } catch {
+        return trimmed.slice(1, -1);
+      }
+    }
+    return trimmed;
+  };
+
+  const flushDescription = () => {
+    if (!blockMode) return;
+    description = blockMode === "literal" ? blockLines.join("\n") : blockLines.join(" ");
+    blockMode = null;
+    blockLines = [];
+  };
+
+  for (const line of lines) {
+    const field = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
+    if (field) {
+      flushDescription();
+      const key = field[1];
+      const value = field[2].trim();
+      if (key === "name") {
+        name = unquote(value);
+      } else if (key === "description") {
+        if (/^[>|][+-]?\s*$/.test(value)) {
+          blockMode = value.startsWith("|") ? "literal" : "fold";
+          blockLines = [];
+        } else {
+          description = unquote(value);
+        }
+      }
+      continue;
+    }
+
+    if (blockMode) {
+      // YAML block scalars use indentation. Trim that indentation while
+      // preserving blank lines for literal descriptions.
+      blockLines.push(line.trim());
+    }
+  }
+  flushDescription();
+  return { name, description };
+}
+
+function listSkillsFromRoots(roots: string[]): SkillInfo[] {
+  const candidates = new Map<string, SkillInfo>();
+  const seenPaths = new Set<string>();
+
+  const add = (metadataPath: string, displayPath: string, root: string, enabled: boolean, fallbackName: string) => {
+    const pathId = pathKey(metadataPath);
+    if (seenPaths.has(pathId)) return;
+    seenPaths.add(pathId);
+
+    const frontmatter = readSkillFrontmatter(metadataPath);
+    const description = frontmatter?.description?.trim() || undefined;
+    // Pi does not register an enabled skill without a non-empty description.
+    // Disabled entries remain visible so the user can turn them back on.
+    if (enabled && (!frontmatter || !description)) return;
+    const name = frontmatter?.name?.trim() || fallbackName;
+    if (!name) return;
+
+    const skill: SkillInfo = { name, path: displayPath, root, enabled, ...(description ? { description } : {}) };
+    const existing = candidates.get(name);
+    // Pi keeps the first valid skill with a given frontmatter name. A disabled
+    // copy is not loaded and therefore must not hide a later enabled copy.
+    if (!existing || (!existing.enabled && enabled)) candidates.set(name, skill);
   };
 
   /** Match pi's recursive discovery: a directory containing SKILL.md is a
-   * skill root and stops traversal; otherwise nested directories are scanned. */
+   * skill root and stops traversal; otherwise nested directories are scanned.
+   * The metadata and name rules below intentionally match Pi 0.84.1. */
   const scan = (dir: string, root: string, includeRootFiles: boolean) => {
     if (!existsSync(dir)) return;
     let entries: import("node:fs").Dirent[];
@@ -284,28 +376,69 @@ export function listSkills(cwd?: string): SkillInfo[] {
       return;
     }
 
-    const enabledEntry = entries.find((entry) => entry.name === "SKILL.md" && entry.isFile());
-    const disabledEntry = entries.find((entry) => entry.name === "SKILL.md.disabled" && entry.isFile());
+    const isFile = (entry: import("node:fs").Dirent, path: string): boolean => {
+      if (entry.isFile()) return true;
+      if (!entry.isSymbolicLink()) return false;
+      try {
+        return statSync(path).isFile();
+      } catch {
+        return false;
+      }
+    };
+
+    const enabledEntry = entries.find((entry) => entry.name === "SKILL.md" && isFile(entry, join(dir, entry.name)));
+    const disabledEntry = entries.find((entry) => entry.name === "SKILL.md.disabled" && isFile(entry, join(dir, entry.name)));
     if (enabledEntry || disabledEntry) {
-      add(basename(dir), dir, root, !!enabledEntry);
+      const entry = enabledEntry || disabledEntry!;
+      add(join(dir, entry.name), dir, root, !!enabledEntry, basename(dir));
       return;
     }
 
     for (const entry of entries) {
       if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
       const abs = join(dir, entry.name);
-      if (entry.isDirectory()) {
+      let isDirectory = entry.isDirectory();
+      if (!isDirectory && entry.isSymbolicLink()) {
+        try {
+          isDirectory = statSync(abs).isDirectory();
+        } catch {
+          isDirectory = false;
+        }
+      }
+      if (isDirectory) {
         scan(abs, root, false);
-      } else if (includeRootFiles && entry.isFile() && entry.name.endsWith(".md")) {
-        add(entry.name.replace(/\.md$/, ""), abs, root, true);
-      } else if (includeRootFiles && entry.isFile() && entry.name.endsWith(".md.disabled")) {
-        add(entry.name.replace(/\.md\.disabled$/, ""), abs, root, false);
+      } else if (includeRootFiles && isFile(entry, abs) && entry.name.endsWith(".md")) {
+        // Pi falls back to the containing directory name for a root-level
+        // markdown skill when frontmatter does not provide `name`.
+        add(abs, abs, root, true, basename(dirname(abs)));
+      } else if (includeRootFiles && isFile(entry, abs) && entry.name.endsWith(".md.disabled")) {
+        add(abs, abs, root, false, basename(dirname(abs)));
       }
     }
   };
 
-  for (const root of skillRoots(cwd)) scan(root, root, true);
-  return out;
+  for (const root of roots) scan(root, root, true);
+  return Array.from(candidates.values());
+}
+
+/** All skill roots that Pi can load for a thread. */
+export function listSkills(cwd?: string): SkillInfo[] {
+  return listSkillsFromRoots(skillRoots(cwd));
+}
+
+/** Skills shown and managed by the Plugins panel. Keep the two global skill
+ * directories, with Pi's own directory first so duplicate names resolve to
+ * the Pi-owned copy. Project skill roots remain available to commands but are
+ * not part of the global Plugins inventory. */
+export function listManagedSkills(): SkillInfo[] {
+  return listSkillsFromRoots([join(getAgentDir(), "skills"), join(homedir(), ".agents", "skills")]);
+}
+
+/** Build the same skill command entries returned by Pi's `get_commands`. */
+export function getSkillCommands(cwd?: string): { name: string; description: string; source: "skill" }[] {
+  return listSkills(cwd)
+    .filter((skill): skill is SkillInfo & { description: string } => skill.enabled && !!skill.description)
+    .map((skill) => ({ name: `skill:${skill.name}`, description: skill.description, source: "skill" as const }));
 }
 
 export function setSkillEnabled(path: string, enabled: boolean): void {
