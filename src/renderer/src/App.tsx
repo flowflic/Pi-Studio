@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useStore } from "./store";
 import { usePiEvents } from "./lib/usePiEvents";
 import { TitleBar } from "./components/TitleBar";
@@ -13,6 +13,7 @@ import { PluginsPanel } from "./components/PluginsPanel";
 import { AutomationPanel } from "./components/AutomationPanel";
 import { Folder, Plus } from "./components/icons";
 import { LanguageBridge } from "./components/LanguageBridge";
+import { RemotePanel } from "./components/RemotePanel";
 import appIconUrl from "../../../resources/icon.png";
 
 export default function App() {
@@ -24,6 +25,8 @@ export default function App() {
   const projects = useStore((s) => s.projects);
   const runtime = useStore((s) => s.runtime);
   const theme = useStore((s) => s.config?.theme || "light");
+  const language = useStore((s) => s.config?.language || "en");
+  const [remoteOpen, setRemoteOpen] = useState(false);
   usePiEvents();
 
   useEffect(() => {
@@ -74,7 +77,7 @@ export default function App() {
       <LanguageBridge />
       <TitleBar />
       <div className={`body ${previewExpanded ? "preview-expanded" : ""}`}>
-        <Sidebar />
+        <Sidebar onOpenRemote={() => setRemoteOpen(true)} remoteOpen={remoteOpen} />
         {activeThreadId ? (
           <Chat />
         ) : (
@@ -110,6 +113,21 @@ export default function App() {
       <PluginsPanel />
       <AutomationPanel />
       <Settings />
+      {remoteOpen && (
+        <div className="settings-backdrop" onMouseDown={() => setRemoteOpen(false)}>
+          <div className="set-modal" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true">
+            <section className="set-main" style={{ width: "min(900px, 94vw)" }}>
+              <header className="set-head">
+                <h2>{language === "zh" ? "Android 手机远程控制" : "Android remote companion"}</h2>
+                <button className="set-iconbtn" onClick={() => setRemoteOpen(false)} aria-label="Close remote settings">×</button>
+              </header>
+              <div className="set-body">
+                <RemotePanel language={language} />
+              </div>
+            </section>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

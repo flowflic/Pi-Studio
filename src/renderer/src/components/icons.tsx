@@ -38,6 +38,11 @@ export const Archive = (p: P) => (
     <path d="M3 4h18v4H3zM9 12h6" />
   </svg>
 );
+export const Star = (p: P) => (
+  <svg {...base(p)}>
+    <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z" />
+  </svg>
+);
 export const Check = (p: P) => (
   <svg {...base(p)}>
     <path d="m5 12 4 4L19 6" />
@@ -215,6 +220,14 @@ export const Sparkle = (p: P) => (
     <path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M18 6l-2.5 2.5M8.5 15.5 6 18" />
   </svg>
 );
+export const AppStore = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M4 9h16v10H4z" />
+    <path d="m3 9 2-5h14l2 5" />
+    <path d="M3 9c.8 1.4 2.4 1.4 3.2 0 .8 1.4 2.4 1.4 3.2 0 .8 1.4 2.4 3.2 0 .8 1.4 2.4 1.4 3.2 0 .8 1.4 2.4 3.2 0" />
+    <path d="M8 19v-5h8v5" />
+  </svg>
+);
 export const Zap = (p: P) => (
   <svg {...base(p)}>
     <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z" />
@@ -224,5 +237,11 @@ export const Gauge = (p: P) => (
   <svg {...base(p)}>
     <path d="m12 14 4-4" />
     <path d="M3.34 19a10 10 0 1 1 17.32 0" />
+  </svg>
+);
+export const Smartphone = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="6.5" y="2.5" width="11" height="19" rx="2" />
+    <path d="M10 5h4M11 18h2" />
   </svg>
 );

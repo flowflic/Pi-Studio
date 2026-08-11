@@ -25,6 +25,8 @@ export interface ThreadSummary {
   updatedAt: number;
   /** Conversation turns: user prompts plus agent final replies. */
   messageCount: number;
+  /** Whether the session is pinned in the Pi Studio sidebar. */
+  pinned?: boolean;
 }
 
 export interface ProjectSummary {
@@ -33,6 +35,10 @@ export interface ProjectSummary {
   /** Folder name shown in the sidebar. */
   name: string;
   threads: ThreadSummary[];
+  /** Whether the project is pinned in the Pi Studio sidebar. */
+  pinned?: boolean;
+  /** Set only for projects opened during the current desktop session. */
+  openedAt?: number;
 }
 
 export function getAgentDir(): string {
@@ -103,7 +109,8 @@ function displayUserPrompt(text: string): string {
 function displayThreadTitle(sessionName: string, promptText: string): string {
   const name = sessionName.trim();
   const prompt = displayUserPrompt(promptText).trim();
-  return name && !/^<skill(?:\s|>)/i.test(name) ? name : prompt;
+  const placeholder = /^(?:new thread|new task|新线程|新建任务)$/i.test(name);
+  return name && !placeholder && !/^<skill(?:\s|>)/i.test(name) ? name : prompt;
 }
 
 /** True when an assistant message is a final user-facing reply: it triggers no

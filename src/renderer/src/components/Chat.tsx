@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { getDisplayThreadTitle, parseSkillBlock, useStore } from "../store";
+import { getDisplayThreadTitle, normalizeThreadFile, parseSkillBlock, useStore } from "../store";
 import { Markdown } from "../lib/markdown";
 import { formatClock, formatTokens } from "../lib/format";
 import { collectFileArtifacts } from "../lib/artifacts";
@@ -13,16 +13,20 @@ import appIconUrl from "../../../../resources/icon.png";
 export function Chat() {
   const activeThreadId = useStore((s) => s.activeThreadId);
   const thread = useStore((s) => (activeThreadId ? s.threads[activeThreadId] : null));
+  const projects = useStore((s) => s.projects);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const togglePreview = useStore((s) => s.togglePreview);
   const newSessionInThread = useStore((s) => s.newSessionInThread);
   const renameThread = useStore((s) => s.renameThread);
   const switchThreadFolder = useStore((s) => s.switchThreadFolder);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const highlightedUserMessageRef = useRef<HTMLElement | null>(null);
+  const jumpHighlightTimerRef = useRef<number | null>(null);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
+  const language = useStore((s) => s.config?.language || "en");
 
   // context-usage popover
   const [ctxOpen, setCtxOpen] = useState(false);
@@ -49,6 +53,12 @@ export function Chat() {
     return () => window.removeEventListener("keydown", close);
   }, [previewImage]);
 
+  useEffect(() => {
+    return () => {
+      if (jumpHighlightTimerRef.current !== null) window.clearTimeout(jumpHighlightTimerRef.current);
+    };
+  }, []);
+
   if (!thread || !activeThreadId) return null;
 
   // Optimistic open: the pi process is still booting. Show the chrome plus a
@@ -61,7 +71,7 @@ export function Chat() {
             <Sidebar size={16} />
           </button>
           <div className="chat-head-titlewrap">
-            <div className="chat-head-title">{thread.sessionName || "新线程"}</div>
+            <div className="chat-head-title">New Thread</div>
           </div>
           <div className="spacer" />
         </div>
@@ -74,7 +84,19 @@ export function Chat() {
   }
 
   const firstUserText = thread.messages.find((m) => m.role === "user")?.text || "";
-  const title = getDisplayThreadTitle(thread.sessionName, firstUserText).slice(0, 40) || "New thread";
+  const isEmptyDraft = thread.messages.length === 0 && !thread.streaming;
+  const titleFile = thread.sessionFile || activeThreadId;
+  const sidebarTitle = activeThreadId
+    ? projects
+        .flatMap((project) => project.threads)
+        .find((summary) => normalizeThreadFile(summary.file || summary.id) === normalizeThreadFile(titleFile))?.title || ""
+    : "";
+  // A stale fresh-session flag must never hide the title of a real transcript.
+  // Once this view has messages, derive the header from this thread itself;
+  // only an actually empty draft uses the default label.
+  const title = isEmptyDraft
+    ? "New Thread"
+    : (sidebarTitle || getDisplayThreadTitle(thread.sessionName, firstUserText)).slice(0, 40) || "New Thread";
 
   // Group consecutive assistant messages into one visual turn: a single agent
   // round emits many assistant messages (think -> tool -> ... -> final reply)
@@ -86,6 +108,40 @@ export function Chat() {
   const lastGroup = groups[groups.length - 1];
   const streamingExtends = !!streaming && !!lastGroup && lastGroup.role === "assistant";
   const headGroups = streamingExtends ? groups.slice(0, -1) : groups;
+  const userGroups = useMemo(
+    () => groups.filter((group) => group.items[0]?.role === "user"),
+    [groups],
+  );
+
+  const jumpToUserMessage = (key: string) => {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    const target = Array.from(scroll.querySelectorAll<HTMLElement>("[data-user-message-key]"))
+      .find((node) => node.dataset.userMessageKey === key);
+    if (!target) return;
+
+    const scrollRect = scroll.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const targetOffset = targetRect.top - scrollRect.top - (scroll.clientHeight - targetRect.height) / 2;
+    const maxScrollTop = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
+    const nextScrollTop = Math.min(maxScrollTop, Math.max(0, scroll.scrollTop + targetOffset));
+    scroll.scrollTo({
+      top: nextScrollTop,
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    });
+
+    highlightedUserMessageRef.current?.classList.remove("message-jump-target");
+    target.classList.remove("message-jump-target");
+    void target.offsetWidth;
+    target.classList.add("message-jump-target");
+    highlightedUserMessageRef.current = target;
+    if (jumpHighlightTimerRef.current !== null) window.clearTimeout(jumpHighlightTimerRef.current);
+    jumpHighlightTimerRef.current = window.setTimeout(() => {
+      target.classList.remove("message-jump-target");
+      if (highlightedUserMessageRef.current === target) highlightedUserMessageRef.current = null;
+      jumpHighlightTimerRef.current = null;
+    }, 900);
+  };
 
   const startRename = () => {
     setEditValue(thread.sessionName || "");
@@ -147,7 +203,7 @@ export function Chat() {
             />
           ) : (
             <>
-              <div className="chat-head-title" title={title} onDoubleClick={startRename}>
+              <div key={`${activeThreadId}:${title}`} className="chat-head-title" title={title} onDoubleClick={startRename}>
                 {title}
               </div>
               {thread.cwd && (
@@ -231,39 +287,44 @@ export function Chat() {
         </button>
       </div>
 
-      <div className="chat-scroll" ref={scrollRef}>
-        <div className="messages">
-          {headGroups.map((g) => (
-            <MessageGroup key={g.key} threadId={activeThreadId} group={g} toolRuns={thread.toolRuns} locked={thread.isStreaming} onPreviewImage={setPreviewImage} />
-          ))}
-          {streaming && streamingExtends && lastGroup && (
-            <MessageGroup
-              key={lastGroup.key}
-              threadId={activeThreadId}
-              group={{ key: lastGroup.key, role: "assistant", items: [...lastGroup.items, streaming] }}
-              toolRuns={thread.toolRuns}
-              locked
-              streaming
-              onPreviewImage={setPreviewImage}
-            />
-          )}
-          {streaming && !streamingExtends && (
-            <MessageGroup
-              key={streaming.key}
-              threadId={activeThreadId}
-              group={{ key: streaming.key, role: "assistant", items: [streaming] }}
-              toolRuns={thread.toolRuns}
-              locked
-              streaming
-              onPreviewImage={setPreviewImage}
-            />
-          )}
-          {thread.error && (
-            <div className="msg system">
-              <div className="msg-body">⚠ {thread.error}</div>
-            </div>
-          )}
+      <div className="chat-stage">
+        <div className="chat-scroll" ref={scrollRef}>
+          <div className="messages">
+            {headGroups.map((g) => (
+              <MessageGroup key={g.key} threadId={activeThreadId} group={g} toolRuns={thread.toolRuns} locked={thread.isStreaming} onPreviewImage={setPreviewImage} />
+            ))}
+            {streaming && streamingExtends && lastGroup && (
+              <MessageGroup
+                key={lastGroup.key}
+                threadId={activeThreadId}
+                group={{ key: lastGroup.key, role: "assistant", items: [...lastGroup.items, streaming] }}
+                toolRuns={thread.toolRuns}
+                locked
+                streaming
+                onPreviewImage={setPreviewImage}
+              />
+            )}
+            {streaming && !streamingExtends && (
+              <MessageGroup
+                key={streaming.key}
+                threadId={activeThreadId}
+                group={{ key: streaming.key, role: "assistant", items: [streaming] }}
+                toolRuns={thread.toolRuns}
+                locked
+                streaming
+                onPreviewImage={setPreviewImage}
+              />
+            )}
+            {thread.error && (
+              <div className="msg system">
+                <div className="msg-body">⚠ {thread.error}</div>
+              </div>
+            )}
+          </div>
         </div>
+        {userGroups.length > 5 && (
+          <UserMessageNav groups={userGroups} language={language} onJump={jumpToUserMessage} />
+        )}
       </div>
 
       <div className="composer-confirmation-region" aria-live="assertive">
@@ -307,6 +368,71 @@ function groupMessages(messages: ViewMessage[]): MsgGroup[] {
     }
   }
   return groups;
+}
+
+function userMessagePreview(group: MsgGroup, language: string): string {
+  const text = (group.items[0]?.text || "").replace(/\s+/g, " ").trim();
+  if (!text) return language === "zh" ? "图片消息" : "Image message";
+  const chars = Array.from(text);
+  return chars.length > 20 ? `${chars.slice(0, 20).join("")}…` : text;
+}
+
+function UserMessageNav({
+  groups,
+  language,
+  onJump,
+}: {
+  groups: MsgGroup[];
+  language: string;
+  onJump: (key: string) => void;
+}) {
+  const navRef = useRef<HTMLElement>(null);
+  const [hovered, setHovered] = useState<{ text: string; top: number } | null>(null);
+
+  if (groups.length <= 5) return null;
+
+  return (
+    <nav
+      ref={navRef}
+      className="user-message-nav"
+      aria-label={language === "zh" ? "用户消息导航" : "User message navigation"}
+    >
+      <div className="user-message-nav-scroll">
+        {groups.map((group, index) => {
+          const preview = userMessagePreview(group, language);
+          return (
+            <button
+              key={group.key}
+              type="button"
+              className="user-message-nav-dot"
+              aria-label={language === "zh" ? `跳转到第 ${index + 1} 条用户消息：${preview}` : `Jump to user message ${index + 1}: ${preview}`}
+              title={preview}
+              onClick={() => onJump(group.key)}
+              onMouseEnter={(event) => {
+                const nav = navRef.current;
+                if (!nav) return;
+                const navRect = nav.getBoundingClientRect();
+                const dotRect = event.currentTarget.getBoundingClientRect();
+                setHovered({ text: preview, top: dotRect.top - navRect.top + dotRect.height / 2 });
+              }}
+              onMouseLeave={() => setHovered(null)}
+              onFocus={(event) => {
+                const nav = navRef.current;
+                if (!nav) return;
+                const navRect = nav.getBoundingClientRect();
+                const dotRect = event.currentTarget.getBoundingClientRect();
+                setHovered({ text: preview, top: dotRect.top - navRect.top + dotRect.height / 2 });
+              }}
+              onBlur={() => setHovered(null)}
+            >
+              <span aria-hidden="true" />
+            </button>
+          );
+        })}
+      </div>
+      {hovered && <div className="user-message-nav-tooltip" style={{ top: hovered.top }}>{hovered.text}</div>}
+    </nav>
+  );
 }
 
 /**
@@ -404,7 +530,7 @@ function MessageGroupInner({
     const m = group.items[0];
     const skillBlock = m.text ? parseSkillBlock(m.text) : null;
     return (
-      <div className="msg user">
+      <div className="msg user" data-user-message-key={group.key}>
         <div className="msg-user-stack">
           <div className="msg-body">
             {m.sendKind && (
@@ -478,9 +604,7 @@ function MessageGroupInner({
         <img className="msg-app-icon" src={appIconUrl} alt="" />
       </div>
       <div className="msg-body">
-        {group.items.map((m) =>
-          (m.blocks || []).map((b, i) => <BlockView key={`${m.key}:${i}`} block={b} toolRuns={toolRuns} />)
-        )}
+        {renderAssistantBlocks(group.items, toolRuns)}
         {streaming && !hasBlocks && <span className="muted">思考中</span>}
         {streaming && <span className="streaming-dot" />}
         {last.errorMessage && <div style={{ color: "#c0392b", marginTop: 6 }}>{last.errorMessage}</div>}
@@ -576,10 +700,36 @@ function plainOfGroup(g: MsgGroup): string {
     .join("\n\n");
 }
 
+function renderAssistantBlocks(items: ViewMessage[], toolRuns: Record<string, ToolRun>): ReactNode[] {
+  const toolCount = items
+    .flatMap((message) => message.blocks || [])
+    .filter((block) => block.type === "toolCall")
+    .length;
+  let activityShown = false;
+  const nodes: ReactNode[] = [];
+  items.forEach((message) => {
+    (message.blocks || []).forEach((block, index) => {
+      const key = `${message.key}:${index}`;
+      if (block.type === "toolCall" && !activityShown) {
+        activityShown = true;
+        nodes.push(
+          <div className="tool-activity-summary" key={`${key}:activity`}>
+            <span className="tool-activity-label">Tool activity</span>
+            <span className="tool-activity-count">{toolCount} {toolCount === 1 ? "call" : "calls"}</span>
+          </div>,
+        );
+      }
+      nodes.push(<BlockView key={key} block={block} toolRuns={toolRuns} />);
+    });
+  });
+  return nodes;
+}
+
 function BlockView({ block, toolRuns }: { block: ContentBlock; toolRuns: Record<string, ToolRun> }) {
   if (block.type === "text") return <Markdown text={block.text} />;
   if (block.type === "thinking") return <Thinking text={block.thinking} />;
-  return <ToolCard id={block.id} name={block.name} run={toolRuns[block.id]} />;
+  const run = toolRuns[block.id];
+  return <ToolCard id={block.id} name={effectiveToolName(block.name, run)} run={run} />;
 }
 
 const SkillInvocation = memo(function SkillInvocation({ name }: { name: string }) {
@@ -608,25 +758,112 @@ const Thinking = memo(function Thinking({ text }: { text: string }) {
   );
 });
 
+function effectiveToolName(blockName: string, run?: ToolRun): string {
+  const runtimeName = typeof run?.name === "string" ? run.name.trim() : "";
+  if (runtimeName && runtimeName.toLowerCase() !== "tool") return runtimeName;
+  const fallbackName = typeof blockName === "string" ? blockName.trim() : "";
+  return fallbackName || runtimeName || "tool";
+}
+
+type ToolStatus = "queued" | "running" | "done" | "error";
+
+function toolStatus(run?: ToolRun): ToolStatus {
+  if (!run) return "queued";
+  if (run.running) return "running";
+  if (run.isError) return "error";
+  if (run.completed) return "done";
+  return "queued";
+}
+
+function firstLine(value: unknown, maxLength = 120): string {
+  const text = normalizeTranscriptText(value)
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean) || "";
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+}
+
+function toolSummary(name: string, run?: ToolRun): string {
+  const args = parseToolArgs(run);
+  const command = toolArg(args, ["command", "cmd", "script"]);
+  if (typeof command === "string" && command.trim()) return firstLine(command);
+
+  const path = toolArg(args, ["path", "filePath", "file_path", "filename", "file"]);
+  if (typeof path === "string" && path.trim()) return normalizeTranscriptText(path);
+
+  const result = run?.resultText ?? run?.partialText;
+  const resultLine = firstLine(result);
+  if (resultLine) return resultLine;
+
+  if (args && Object.keys(args).length > 0) {
+    const count = Object.keys(args).length;
+    return `${count} argument${count === 1 ? "" : "s"}`;
+  }
+  if (run?.argsStr) return firstLine(run.argsStr);
+  return name === "tool" ? "Waiting for tool data" : "";
+}
+
+function toolDuration(run?: ToolRun): string {
+  if (!run?.startedAt) return "";
+  const end = run.endedAt || Date.now();
+  const seconds = Math.max(0, (end - run.startedAt) / 1000);
+  return seconds < 1 ? "<1s" : `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+}
+
 const ToolCard = memo(function ToolCard({ id, name, run }: { id: string; name: string; run?: ToolRun }) {
   const [open, setOpen] = useState(false);
   const running = run?.running;
   const argsView = renderToolArgs(name, run);
   const result = run?.resultText ?? run?.partialText ?? "";
-  const status = running ? "running" : run?.isError ? "error" : run ? "done" : "queued";
+  const status = toolStatus(run);
+  const summary = toolSummary(name, run);
+  const duration = toolDuration(run);
+  const detailsId = `tool-details-${id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  const showOutput = Boolean(run?.running || run?.completed || run?.isError || result);
+  const emptyMessage = !run
+    ? "Waiting for execution data"
+    : running
+      ? "Output will appear here while the tool runs"
+      : "No output returned";
   return (
-    <div className="tool-card">
-      <div className="tool-head" onClick={() => setOpen((v) => !v)}>
+    <div className={`tool-card state-${status} ${open ? "is-open" : ""}`}>
+      <button
+        className="tool-head"
+        type="button"
+        aria-expanded={open}
+        aria-controls={detailsId}
+        onClick={() => setOpen((v) => !v)}
+      >
         <span style={{ transform: open ? "rotate(90deg)" : "none", display: "inline-block", transition: "transform .12s" }}>›</span>
         <span className="tool-name">{name}</span>
-        <span className={`tool-status ${running ? "run" : run?.isError ? "err" : ""}`}>
+        {summary && <span className="tool-summary" title={summary}>{summary}</span>}
+        <span className={`tool-status state-${status}`}>
           {running ? <span className="spinner" /> : status}
         </span>
-      </div>
-      {open && argsView && <div className="tool-args">{argsView}</div>}
-      {open && result && (
-        <div className={`tool-result ${run?.isError ? "err" : ""}`}>
-          <ToolCode text={normalizeTranscriptText(result)} />
+        {duration && <span className="tool-duration">{duration}</span>}
+      </button>
+      {open && (
+        <div className="tool-details" id={detailsId}>
+          {argsView && (
+            <section className="tool-section">
+              <div className="tool-section-label">Arguments</div>
+              <div className="tool-args">{argsView}</div>
+            </section>
+          )}
+          {showOutput && (
+            <section className="tool-section">
+              <div className="tool-section-label">Output</div>
+              {result ? (
+                <div className={`tool-result ${run?.isError ? "err" : ""}`}>
+                  <ToolCode text={normalizeTranscriptText(result)} language={languageForResult(name, run)} />
+                </div>
+              ) : (
+                <div className="tool-empty compact">{emptyMessage}</div>
+              )}
+            </section>
+          )}
+          {!argsView && !showOutput && <div className="tool-empty">{emptyMessage}</div>}
         </div>
       )}
     </div>
@@ -716,6 +953,8 @@ function languageForPath(path: string): string | undefined {
     bash: "bash",
     zsh: "bash",
     ps1: "powershell",
+    psm1: "powershell",
+    psd1: "powershell",
     md: "markdown",
     yml: "yaml",
     yaml: "yaml",
@@ -730,8 +969,17 @@ function languageForPath(path: string): string | undefined {
 
 function languageForTool(name: string): string | undefined {
   if (matchesTool(name, ["python"])) return "python";
-  if (matchesTool(name, ["bash", "shell", "sh", "zsh", "powershell", "pwsh"])) return "bash";
+  if (matchesTool(name, ["powershell", "pwsh"])) return "powershell";
+  if (matchesTool(name, ["bash", "shell", "sh", "zsh"])) return "bash";
   return undefined;
+}
+
+function languageForResult(name: string, run?: ToolRun): string | undefined {
+  const toolLanguage = languageForTool(name);
+  if (toolLanguage) return toolLanguage;
+  const args = parseToolArgs(run);
+  const path = toolArg(args, ["path", "filePath", "file_path", "filename", "file"]);
+  return typeof path === "string" ? languageForPath(normalizeTranscriptText(path)) : undefined;
 }
 
 function codeFence(text: string, language?: string): string {
@@ -783,6 +1031,7 @@ function renderToolArgs(name: string, run?: ToolRun): ReactNode {
     if (!sections.length && run.argsStr) {
       return <ToolCode text={normalizeTranscriptText(run.argsStr)} language="json" />;
     }
+    if (!sections.length && !path) return null;
     return (
       <div className="tool-operation">
         <div className="tool-operation-title">{isEdit ? "编辑" : "写入"}{path ? ` · ${path}` : ""}</div>
@@ -792,19 +1041,13 @@ function renderToolArgs(name: string, run?: ToolRun): ReactNode {
   }
 
   if (args && Object.keys(args).length > 0) {
-    const generic = Object.entries(args)
-      .map(([key, value]) => {
-        if (typeof value === "string") return `${key}:\n${normalizeTranscriptText(value)}`;
-        let rendered = "";
-        try {
-          rendered = JSON.stringify(value, null, 2);
-        } catch {
-          rendered = String(value);
-        }
-        return `${key}: ${rendered}`;
-      })
-      .join("\n\n");
-    return <ToolCode text={generic} />;
+    let generic = "";
+    try {
+      generic = JSON.stringify(args, null, 2);
+    } catch {
+      generic = String(args);
+    }
+    return <ToolCode text={generic} language="json" />;
   }
 
   return run.argsStr ? <ToolCode text={normalizeTranscriptText(run.argsStr)} language="json" /> : null;

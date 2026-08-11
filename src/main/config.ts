@@ -22,8 +22,12 @@ export interface AppConfig {
    * node + cli.js directly to avoid Windows .cmd / quoting pitfalls.
    */
   piCliPath: string;
-  /** Projects the user opened manually; shown pinned at the top of the sidebar. */
+  /** Projects the user explicitly pinned; shown at the top of the sidebar. */
   pinnedProjects: string[];
+  /** Internal migration marker for the explicit project-pin behavior. */
+  projectPinSchemaVersion: number;
+  /** Individual sessions shown at the top of their project in the sidebar. */
+  pinnedThreads: string[];
   /** Project folders hidden from normal navigation until restored in Settings. */
   archivedProjects: string[];
   /** Individual sessions hidden from normal navigation until restored in Settings. */
@@ -40,7 +44,20 @@ export interface AppConfig {
   lastThreadCwd?: string;
   /** User-defined scheduled automation tasks. */
   automationTasks: AutomationTask[];
+  /** Public WSS endpoint used only for SDP/ICE signaling; no app data is sent there. */
+  remoteSignalingUrl: string;
+  /** Internal STUN endpoints used for direct WebRTC candidate discovery. TURN is intentionally unsupported. */
+  remoteStunUrls: string[];
 }
+
+export const DEFAULT_REMOTE_SIGNALING_URL = "wss://pi-studio-remote.scholarcn.com/ws";
+
+/** Fixed transport bootstrap endpoints. These are intentionally not user-editable. */
+export const BUILT_IN_REMOTE_STUN_URLS = [
+  "stun:stun.miwifi.com:3478",
+  "stun:stun.chat.bilibili.com:3478",
+  "stun:stun.cloudflare.com:3478",
+] as const;
 
 export type ScheduleFrequency = "hourly" | "daily" | "weekly";
 
@@ -72,12 +89,16 @@ export interface AutomationTask {
 const DEFAULTS: AppConfig = {
   piCliPath: "",
   pinnedProjects: [],
+  projectPinSchemaVersion: 1,
+  pinnedThreads: [],
   archivedProjects: [],
   archivedThreads: [],
   theme: "light",
   language: "en",
   threadPermissions: {},
   automationTasks: [],
+  remoteSignalingUrl: DEFAULT_REMOTE_SIGNALING_URL,
+  remoteStunUrls: [...BUILT_IN_REMOTE_STUN_URLS],
 };
 
 let cached: AppConfig | null = null;
@@ -93,9 +114,23 @@ export function loadConfig(userDataDir: string): AppConfig {
   if (existsSync(file)) {
     try {
       const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<AppConfig>;
+      // Older development builds silently added every opened folder to
+      // pinnedProjects. Those entries are not distinguishable from a real
+      // user pin, so discard them once when adopting explicit pin semantics;
+      // users can re-pin the projects they actually want to keep at the top.
+      const legacyProjectPins = parsed.projectPinSchemaVersion !== 1;
       cached = {
         ...DEFAULTS,
         ...parsed,
+        pinnedProjects: legacyProjectPins ? [] : (parsed.pinnedProjects || []),
+        projectPinSchemaVersion: 1,
+        remoteSignalingUrl: typeof parsed.remoteSignalingUrl === "string" && parsed.remoteSignalingUrl.trim()
+          ? parsed.remoteSignalingUrl.trim()
+          : DEFAULTS.remoteSignalingUrl,
+        // Older config files may contain a custom list. Always replace it with
+        // the built-in list so this transport setting cannot be changed via
+        // persisted data or a generic config update.
+        remoteStunUrls: [...BUILT_IN_REMOTE_STUN_URLS],
         automationTasks: (parsed.automationTasks || []).map((task) => ({
           ...task,
           permission: task.permission === "full" ? "full" : "sandbox",
@@ -122,7 +157,11 @@ export function getConfigDir(): string {
 
 export function updateConfig(patch: Partial<AppConfig>): AppConfig {
   if (!cached) throw new Error("config not loaded");
-  cached = { ...cached, ...patch };
+  cached = {
+    ...cached,
+    ...patch,
+    remoteStunUrls: [...BUILT_IN_REMOTE_STUN_URLS],
+  };
   if (!existsSync(cachedDir)) mkdirSync(cachedDir, { recursive: true });
   writeFileSync(configPath(cachedDir), JSON.stringify(cached, null, 2), "utf8");
   return cached;

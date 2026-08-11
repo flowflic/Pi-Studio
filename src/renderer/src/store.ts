@@ -14,6 +14,7 @@ import type {
   PreviewPayload,
   ProjectSummary,
   SkillInfo,
+  SkillHubSkill,
   ThreadState,
   Toast,
   ToolRun,
@@ -48,6 +49,24 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
   };
 }
 
+/** Match the command typed by the user to Pi's expanded skill message. Pi
+ * persists/emits the latter, while the renderer shows the former optimistically
+ * before the first RPC event arrives. */
+function matchesOptimisticUserMessage(optimisticText: string, serverText: string): boolean {
+  const normalize = (value: string) => value.replace(/\r\n/g, "\n").trim();
+  if (normalize(optimisticText) === normalize(serverText)) return true;
+
+  const skill = parseSkillBlock(serverText);
+  if (!skill) return false;
+  const invocation = normalize(optimisticText).match(/^\/skill:([^\s]+)(?:[ \t]+([\s\S]*))?$/i);
+  if (!invocation) return false;
+
+  return (
+    invocation[1].toLowerCase() === skill.name.toLowerCase() &&
+    normalize(invocation[2] || "") === normalize(skill.userMessage || "")
+  );
+}
+
 /** Replace Pi's expanded skill envelope with the actual user request for
  * titles and previews. A skill without extra text falls back to its name. */
 export function getDisplayUserPrompt(text: string): string {
@@ -58,7 +77,22 @@ export function getDisplayUserPrompt(text: string): string {
 export function getDisplayThreadTitle(sessionName: string | null | undefined, promptText: string): string {
   const name = (sessionName || "").trim();
   const prompt = getDisplayUserPrompt(promptText).trim();
-  return name && !/^<skill(?:\s|>)/i.test(name) ? name : prompt;
+  const placeholder = /^(?:new thread|new task|新线程|新建任务)$/i.test(name);
+  return name && !placeholder && !/^<skill(?:\s|>)/i.test(name) ? name : prompt;
+}
+
+/**
+ * Session files come from both the renderer's project scan and the main
+ * process. On Windows those sources can disagree on slash direction or leave
+ * a trailing separator, which must not make two references to one thread look
+ * like different threads.
+ */
+export function normalizeThreadFile(value: string | null | undefined): string {
+  return (value || "")
+    .trim()
+    .replace(/[\\/]+/g, "\\")
+    .replace(/\\+$/, "")
+    .toLowerCase();
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
@@ -88,12 +122,24 @@ function mergeLiveThreadsIntoProjects(
   live: Record<string, ThreadState>,
   archivedProjects: string[] = [],
   archivedThreads: ArchivedThread[] = [],
+  pinnedProjects: string[] = [],
+  pinnedThreads: string[] = [],
 ): ProjectSummary[] {
   const archived = new Set(archivedProjects.map((cwd) => cwd.toLowerCase()));
   const archivedThreadFiles = new Set(archivedThreads.map((thread) => thread.file.toLowerCase()));
+  const pinnedProjectSet = new Set(pinnedProjects.map((cwd) => cwd.toLowerCase()));
+  const pinnedThreadSet = new Set(pinnedThreads.map((file) => file.toLowerCase()));
+  const pinnedProjectRank = new Map(pinnedProjects.map((cwd, index) => [cwd.toLowerCase(), index]));
+  const pinnedThreadRank = new Map(pinnedThreads.map((file, index) => [file.toLowerCase(), index]));
   const next = projects.map((project) => ({
     ...project,
-    threads: project.threads.filter((thread) => !archivedThreadFiles.has(thread.file.toLowerCase())),
+    pinned: project.pinned || pinnedProjectSet.has(project.cwd.toLowerCase()),
+    threads: project.threads
+      .filter((thread) => !archivedThreadFiles.has(thread.file.toLowerCase()))
+      .map((thread) => ({
+        ...thread,
+        pinned: thread.pinned || pinnedThreadSet.has(thread.file.toLowerCase()),
+      })),
   }));
   const byCwd = new Map(next.map((project) => [project.cwd.toLowerCase(), project]));
 
@@ -108,11 +154,16 @@ function mergeLiveThreadsIntoProjects(
     let project = byCwd.get(thread.cwd.toLowerCase());
     if (!project) {
       const name = thread.cwd.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || thread.cwd;
-      project = { cwd: thread.cwd, name, threads: [] };
+      project = {
+        cwd: thread.cwd,
+        name,
+        pinned: pinnedProjectSet.has(thread.cwd.toLowerCase()),
+        threads: [],
+      };
       next.unshift(project);
       byCwd.set(thread.cwd.toLowerCase(), project);
     }
-    if (project.threads.some((summary) => summary.file === file)) continue;
+    if (project.threads.some((summary) => summary.file.toLowerCase() === file.toLowerCase())) continue;
 
     const userMessages = thread.messages.filter((message) => message.role === "user");
     const lastUser = userMessages[userMessages.length - 1] || firstUser;
@@ -120,13 +171,86 @@ function mergeLiveThreadsIntoProjects(
     project.threads.unshift({
       file,
       id: file,
-      title: getDisplayThreadTitle(thread.sessionName, firstText).slice(0, 80) || "新线程",
+      title: getDisplayThreadTitle(thread.sessionName, firstText).slice(0, 80) || "New Thread",
       preview: firstText.slice(0, 120) || (firstUser.images?.length ? "图片消息" : ""),
       updatedAt: lastUser.timestamp || Date.now(),
       messageCount: thread.messages.filter((message) => message.role === "user" || message.role === "assistant").length,
+      pinned: pinnedThreadSet.has(file.toLowerCase()),
     });
   }
+
+  for (const project of next) {
+    project.threads.sort((a, b) => {
+      const aPinned = a.pinned ? 0 : 1;
+      const bPinned = b.pinned ? 0 : 1;
+      if (aPinned !== bPinned) return aPinned - bPinned;
+      if (a.pinned && b.pinned) {
+        return (
+          (pinnedThreadRank.get(a.file.toLowerCase()) ?? Number.MAX_SAFE_INTEGER) -
+          (pinnedThreadRank.get(b.file.toLowerCase()) ?? Number.MAX_SAFE_INTEGER)
+        );
+      }
+      return b.updatedAt - a.updatedAt;
+    });
+  }
+  next.sort((a, b) => {
+    const aPinned = a.pinned ? 0 : 1;
+    const bPinned = b.pinned ? 0 : 1;
+    if (aPinned !== bPinned) return aPinned - bPinned;
+    if (a.pinned && b.pinned) {
+      return (
+        (pinnedProjectRank.get(a.cwd.toLowerCase()) ?? Number.MAX_SAFE_INTEGER) -
+        (pinnedProjectRank.get(b.cwd.toLowerCase()) ?? Number.MAX_SAFE_INTEGER)
+      );
+    }
+    if (a.openedAt !== undefined || b.openedAt !== undefined) {
+      if (a.openedAt === undefined) return 1;
+      if (b.openedAt === undefined) return -1;
+      return b.openedAt - a.openedAt;
+    }
+    return (b.threads[0]?.updatedAt ?? 0) - (a.threads[0]?.updatedAt ?? 0);
+  });
   return next;
+}
+
+/** Keep the open chat title in lockstep with the authoritative sidebar summary.
+ * The sidebar is refreshed from session JSONL, while an already-open chat can
+ * still hold the old session_info value (or null for a newly named session). */
+function syncOpenThreadTitles(
+  threads: Record<string, ThreadState>,
+  projects: ProjectSummary[],
+): Record<string, ThreadState> {
+  const titleByFile = new Map<string, string>();
+  for (const project of projects) {
+    for (const summary of project.threads) {
+      const file = normalizeThreadFile(summary.file || summary.id);
+      const title = (summary.title || "").trim();
+      if (file && title) titleByFile.set(file, title);
+    }
+  }
+
+  let next = threads;
+  for (const [id, thread] of Object.entries(threads)) {
+    // A stale fresh-session flag must not block title reconciliation once the
+    // thread already contains a real transcript.
+    if (thread.isNewSession && thread.messages.length === 0) continue;
+    const file = normalizeThreadFile(thread.sessionFile || id);
+    const title = titleByFile.get(file);
+    if (!title || thread.sessionName === title) continue;
+    if (next === threads) next = { ...threads };
+    next[id] = { ...thread, sessionName: title };
+  }
+  return next;
+}
+
+function findProjectThreadTitle(projects: ProjectSummary[], file: string | null | undefined): string | null {
+  const target = normalizeThreadFile(file);
+  if (!target) return null;
+  for (const project of projects) {
+    const summary = project.threads.find((thread) => normalizeThreadFile(thread.file || thread.id) === target);
+    if (summary?.title?.trim()) return summary.title.trim();
+  }
+  return null;
 }
 
 function textOfContent(content: unknown): string {
@@ -169,6 +293,34 @@ function addThinking(blocks: ContentBlock[], delta: string): ContentBlock[] {
   if (last && last.type === "thinking") b[b.length - 1] = { ...last, thinking: last.thinking + delta };
   else b.push({ type: "thinking", thinking: delta });
   return b;
+}
+
+function usableToolName(value: unknown): string | undefined {
+  const name = typeof value === "string" ? value.trim() : "";
+  return name && name.toLowerCase() !== "tool" ? name : undefined;
+}
+
+function toolBlockById(blocks: ContentBlock[], id: string): Extract<ContentBlock, { type: "toolCall" }> | undefined {
+  return blocks.find((block): block is Extract<ContentBlock, { type: "toolCall" }> => block.type === "toolCall" && block.id === id);
+}
+
+function upsertToolBlock(blocks: ContentBlock[], id: string, name: string, args?: unknown): ContentBlock[] {
+  const previous = toolBlockById(blocks, id);
+  const nextName = usableToolName(name) || usableToolName(previous?.name) || previous?.name || "tool";
+  const nextArgs = args && typeof args === "object" && !Array.isArray(args) && Object.keys(args).length > 0
+    ? args
+    : previous?.arguments || {};
+  if (previous) {
+    return blocks.map((block) =>
+      block.type === "toolCall" && block.id === id ? { ...block, name: nextName, arguments: nextArgs } : block,
+    );
+  }
+  return [...blocks, { type: "toolCall", id, name: nextName, arguments: nextArgs }];
+}
+
+function updateToolBlockName(blocks: ContentBlock[] | undefined, id: string, name: string, args?: unknown): ContentBlock[] | undefined {
+  if (!blocks) return blocks;
+  return upsertToolBlock(blocks, id, name, args);
 }
 
 const newAssistant = (key?: string): ViewMessage => ({ key: key || `a-${uid()}`, role: "assistant", blocks: [], timestamp: Date.now() });
@@ -329,7 +481,7 @@ function reduceThread(t: ThreadState, event: any): ThreadState {
         for (let i = t.messages.length - 1; i >= 0; i--) {
           const candidate = t.messages[i];
           if (!candidate?.key.startsWith("opt-")) continue;
-          if (!serverText || candidate.text === serverText) {
+          if (!serverText || matchesOptimisticUserMessage(candidate.text || "", serverText)) {
             optimisticIndex = i;
             break;
           }
@@ -393,28 +545,40 @@ function reduceThread(t: ThreadState, event: any): ThreadState {
           const ci = ame.contentIndex;
           const partial = ame.partial?.content?.[ci];
           const id = ame.toolCall?.id || partial?.id || `tc-${ci ?? uid()}`;
-          const name = ame.toolCall?.name || partial?.name || "tool";
-          blocks = [...blocks, { type: "toolCall", id, name, arguments: {} }];
-          runs = { ...runs };
-          if (!runs[id]) runs[id] = { id, name, args: {}, running: false, argsStr: "" };
+          const existingBlock = toolBlockById(blocks, id);
+          const existingRun = runs[id];
+          const name = usableToolName(ame.toolCall?.name) || usableToolName(partial?.name) || usableToolName(existingRun?.name) || usableToolName(existingBlock?.name) || "tool";
+          const args = ame.toolCall?.arguments || partial?.arguments || existingRun?.args || existingBlock?.arguments || {};
+          blocks = upsertToolBlock(blocks, id, name, args);
+          runs = {
+            ...runs,
+            [id]: {
+              ...(existingRun || { id, args: {}, running: false, argsStr: "" }),
+              id,
+              name,
+              args,
+            },
+          };
           break;
         }
         case "toolcall_delta": {
           const id = ame.toolCall?.id || ame.partial?.content?.[ame.contentIndex]?.id;
           if (id) {
-            const r = runs[id] || { id, name: "tool", args: {}, running: false, argsStr: "" };
+            const block = toolBlockById(blocks, id);
+            const r = runs[id] || { id, name: block?.name || "tool", args: block?.arguments || {}, running: false, argsStr: "" };
             runs = { ...runs, [id]: { ...r, argsStr: (r.argsStr || "") + (ame.delta || "") } };
           }
           break;
         }
         case "toolcall_end": {
-          const id = ame.toolCall?.id;
+          const id = ame.toolCall?.id || ame.partial?.content?.[ame.contentIndex]?.id;
           const r = id ? runs[id] : undefined;
           if (id && r?.argsStr) {
             try {
               const parsed = JSON.parse(r.argsStr);
-              runs = { ...runs, [id]: { ...r, args: parsed } };
-              blocks = blocks.map((b) => (b.type === "toolCall" && b.id === id ? { ...b, arguments: parsed } : b));
+              const name = usableToolName(ame.toolCall?.name) || r.name || "tool";
+              runs = { ...runs, [id]: { ...r, name, args: parsed } };
+              blocks = upsertToolBlock(blocks, id, name, parsed);
             } catch {
               /* leave as-is */
             }
@@ -431,11 +595,23 @@ function reduceThread(t: ThreadState, event: any): ThreadState {
       const id = event.toolCallId;
       if (!id) return t;
       const prev = t.toolRuns[id] || { id, name: event.toolName || "tool", args: {}, running: false };
+      const name = usableToolName(event.toolName) || usableToolName(prev.name) || "tool";
+      const args = event.args && typeof event.args === "object" ? event.args : prev.args;
       return {
         ...t,
+        streaming: t.streaming ? { ...t.streaming, blocks: updateToolBlockName(t.streaming.blocks, id, name, args) } : t.streaming,
         toolRuns: {
           ...t.toolRuns,
-          [id]: { ...prev, name: event.toolName || prev.name, args: event.args || prev.args, running: true, completed: false },
+          [id]: {
+            ...prev,
+            name,
+            args,
+            running: true,
+            completed: false,
+            isError: false,
+            startedAt: prev.startedAt || Date.now(),
+            endedAt: undefined,
+          },
         },
       };
     }
@@ -443,23 +619,37 @@ function reduceThread(t: ThreadState, event: any): ThreadState {
       const id = event.toolCallId;
       if (!id) return t;
       const prev = t.toolRuns[id] || { id, name: event.toolName || "tool", args: {}, running: true };
-      return { ...t, toolRuns: { ...t.toolRuns, [id]: { ...prev, partialText: textOfContent(event.partialResult?.content) } } };
+      const name = usableToolName(event.toolName) || usableToolName(prev.name) || "tool";
+      return {
+        ...t,
+        streaming: t.streaming ? { ...t.streaming, blocks: updateToolBlockName(t.streaming.blocks, id, name, prev.args) } : t.streaming,
+        toolRuns: {
+          ...t.toolRuns,
+          [id]: { ...prev, name, partialText: textOfContent(event.partialResult?.content), startedAt: prev.startedAt || Date.now() },
+        },
+      };
     }
     case "tool_execution_end": {
       const id = event.toolCallId;
       if (!id) return t;
       const prev = t.toolRuns[id] || { id, name: event.toolName || "tool", args: {}, running: false };
+      const name = usableToolName(event.toolName) || usableToolName(prev.name) || "tool";
+      const endedAt = Date.now();
       return {
         ...t,
+        streaming: t.streaming ? { ...t.streaming, blocks: updateToolBlockName(t.streaming.blocks, id, name, prev.args) } : t.streaming,
         toolRuns: {
           ...t.toolRuns,
           [id]: {
             ...prev,
+            name,
             running: false,
             completed: true,
             isError: !!event.isError,
             resultText: textOfContent(event.result?.content),
             partialText: undefined,
+            startedAt: prev.startedAt || endedAt,
+            endedAt,
           },
         },
       };
@@ -515,7 +705,9 @@ interface PiStore {
   bootstrap: () => Promise<void>;
   refreshProjects: () => Promise<void>;
   openProjectFolder: () => Promise<void>;
+  setProjectPinned: (cwd: string, pinned: boolean) => Promise<void>;
   unpinProject: (cwd: string) => Promise<void>;
+  setThreadPinned: (file: string, pinned: boolean) => Promise<void>;
   archiveProject: (cwd: string) => Promise<void>;
   restoreProject: (cwd: string) => Promise<void>;
   archiveThread: (cwd: string, file: string, title?: string) => Promise<void>;
@@ -587,6 +779,7 @@ interface PiStore {
   removePackage: (source: string) => Promise<void>;
   updatePackages: (source?: string) => Promise<void>;
   toggleSkill: (path: string, enabled: boolean) => Promise<void>;
+  installSkill: (skill: SkillHubSkill) => Promise<boolean>;
 
   // automation overlay
   automationOpen: boolean;
@@ -776,9 +969,12 @@ export const useStore = create<PiStore>()((set, get) => ({
         {},
         appConfig?.archivedProjects || [],
         appConfig?.archivedThreads || [],
+        appConfig?.pinnedProjects || [],
+        appConfig?.pinnedThreads || [],
       );
       set((state) => ({
         projects,
+        threads: syncOpenThreadTitles(state.threads, projects),
         activeProjectCwd: state.activeProjectCwd || projects[0]?.cwd || null,
         expandedProjects:
           state.activeProjectCwd || !projects[0]
@@ -801,14 +997,20 @@ export const useStore = create<PiStore>()((set, get) => ({
     try {
       const diskProjects = await window.pi.app.getProjects();
       // Include prompts accepted by Pi even before its delayed JSONL flush.
-      set((s) => ({
-        projects: mergeLiveThreadsIntoProjects(
+      set((s) => {
+        const projects = mergeLiveThreadsIntoProjects(
           diskProjects,
           s.threads,
           s.config?.archivedProjects || [],
           s.config?.archivedThreads || [],
-        ),
-      }));
+          s.config?.pinnedProjects || [],
+          s.config?.pinnedThreads || [],
+        );
+        return {
+          projects,
+          threads: syncOpenThreadTitles(s.threads, projects),
+        };
+      });
     } catch (e: any) {
       get().pushToast("error", "Failed to load projects: " + (e?.message || e));
     }
@@ -820,18 +1022,29 @@ export const useStore = create<PiStore>()((set, get) => ({
       if (!path) return;
       await window.pi.app.openProject(path);
       await get().refreshProjects();
-      set({ activeProjectCwd: path, expandedProjects: { ...get().expandedProjects, [path]: true } });
+      set({ activeProjectCwd: path, activeThreadId: null, expandedProjects: { ...get().expandedProjects, [path]: true } });
     } catch (e: any) {
       get().pushToast("error", "Open folder failed: " + (e?.message || e));
     }
   },
 
-  unpinProject: async (cwd) => {
+  setProjectPinned: async (cwd, pinned) => {
     try {
-      await window.pi.app.unpinProject(cwd);
+      const config = await window.pi.app.setProjectPinned({ cwd, pinned });
+      set({ config });
       await get().refreshProjects();
     } catch (e: any) {
-      get().pushToast("error", e?.message || "unpin failed");
+      get().pushToast("error", e?.message || (pinned ? "Pin project failed" : "Unpin project failed"));
+    }
+  },
+  unpinProject: async (cwd) => get().setProjectPinned(cwd, false),
+  setThreadPinned: async (file, pinned) => {
+    try {
+      const config = await window.pi.app.setThreadPinned({ file, pinned });
+      set({ config });
+      await get().refreshProjects();
+    } catch (e: any) {
+      get().pushToast("error", e?.message || (pinned ? "Pin thread failed" : "Unpin thread failed"));
     }
   },
   archiveProject: async (cwd) => {
@@ -926,7 +1139,7 @@ export const useStore = create<PiStore>()((set, get) => ({
   },
 
   toggleProject: (cwd) => set((s) => ({ expandedProjects: { ...s.expandedProjects, [cwd]: !s.expandedProjects[cwd] } })),
-  setActiveProject: (cwd) => set({ activeProjectCwd: cwd }),
+  setActiveProject: (cwd) => set({ activeProjectCwd: cwd, activeThreadId: null }),
 
   openThread: async (cwd, sessionFile, permission) => {
     // Already on screen: just activate. If it was only disk-rendered so far
@@ -936,6 +1149,18 @@ export const useStore = create<PiStore>()((set, get) => ({
       set((s) => ({
         activeThreadId: sessionFile,
         activeProjectCwd: cwd,
+        threads: {
+          ...s.threads,
+          [sessionFile]: {
+            ...s.threads[sessionFile],
+            sessionName:
+              findProjectThreadTitle(s.projects, sessionFile) ||
+              getDisplayThreadTitle(null, s.threads[sessionFile].messages.find((message) => message.role === "user")?.text || "") ||
+              s.threads[sessionFile].sessionName,
+            isNewSession: false,
+            creatingSession: false,
+          },
+        },
         expandedProjects: { ...s.expandedProjects, [cwd]: true },
       }));
       if (!get().threads[sessionFile].connected) get().ensureConnected(sessionFile);
@@ -949,10 +1174,14 @@ export const useStore = create<PiStore>()((set, get) => ({
       try {
         const hist: any = await window.pi.thread.loadHistory({ cwd, sessionFile });
         const { views, toolRuns } = historyToView(hist.messages || [], hist.branchMessages || []);
+        const sidebarTitle = findProjectThreadTitle(get().projects, hist.sessionFile || sessionFile);
+        const firstUserText = views.find((message) => message.role === "user")?.text || "";
         const thread: ThreadState = {
           ...emptyThread(hist.cwd || cwd),
           sessionFile: hist.sessionFile || sessionFile,
-          sessionName: hist.sessionName,
+          sessionName: sidebarTitle || hist.sessionName || getDisplayThreadTitle(null, firstUserText) || null,
+          isNewSession: false,
+          creatingSession: false,
           model: hist.model,
           models: hist.models || [],
           thinking: hist.thinkingLevel || "off",
@@ -992,6 +1221,7 @@ export const useStore = create<PiStore>()((set, get) => ({
     // The temp id is remapped to the real session file once connected.
     const tempId = `opening-${uid()}`;
     const placeholder: ThreadState = { ...emptyThread(cwd), loading: false, connected: false, permission: permission || "sandbox" };
+    placeholder.isNewSession = true;
     set((s) => ({
       threads: { ...s.threads, [tempId]: placeholder },
       openThreadIds: s.openThreadIds.includes(tempId) ? s.openThreadIds : [...s.openThreadIds, tempId],
@@ -1022,10 +1252,27 @@ export const useStore = create<PiStore>()((set, get) => ({
           // (e.g. a fast first send on a brand-new thread); live history never
           // contains them, so without this they would be dropped on merge/remap.
           const optimistic = (prev?.messages || []).filter((m) => m.key.startsWith("opt-"));
+          const hasOptimisticUser = optimistic.some((message) => message.role === "user");
+          // A no-session open is a fresh task even when the adopted warm bridge
+          // reports the previous session's metadata. Keep that boundary until
+          // the first prompt creates the new task title. If a prompt raced the
+          // connection, preserve its optimistic title instead.
+          const freshSession = !hasOptimisticUser && (
+            res.isNewSession === true ||
+            prev?.isNewSession === true ||
+            (!t.sessionFile && !prev?.sessionFile && !(prev?.messages || []).some((message) => message.role === "user"))
+          );
+          const currentFile = res.sessionFile || t.sessionFile || id;
+          const sidebarTitle = findProjectThreadTitle(s.projects, currentFile);
+          const firstUserText = (prev?.messages || views).find((message) => message.role === "user")?.text || "";
           const merged: ThreadState = {
             ...emptyThread(res.cwd || t.cwd),
             sessionFile: res.sessionFile || t.sessionFile,
-            sessionName: res.sessionName ?? prev?.sessionName ?? null,
+            sessionName: freshSession
+              ? null
+              : (sidebarTitle || res.sessionName || prev?.sessionName || getDisplayThreadTitle(null, firstUserText) || null),
+            isNewSession: freshSession ? true : prev?.isNewSession,
+            creatingSession: prev?.creatingSession,
             model: res.model ?? prev?.model ?? null,
             models: res.models || [],
             thinking: res.thinkingLevel || prev?.thinking || "off",
@@ -1101,7 +1348,7 @@ export const useStore = create<PiStore>()((set, get) => ({
       if (!p || Array.isArray(p)) return;
       await window.pi.app.openProject(p);
       await get().refreshProjects();
-      set({ activeProjectCwd: p, expandedProjects: { ...get().expandedProjects, [p]: true } });
+      set({ activeProjectCwd: p, activeThreadId: null, expandedProjects: { ...get().expandedProjects, [p]: true } });
       cwd = p;
     }
     if (cwd) {
@@ -1118,6 +1365,7 @@ export const useStore = create<PiStore>()((set, get) => ({
     const hasAtt = !!attachments && attachments.length > 0;
     if (!trimmed && !hasImg && !hasAtt) return;
     const wasStreaming = !!get().threads[threadId]?.isStreaming;
+    const optimisticTitle = getDisplayThreadTitle(null, trimmed).trim().slice(0, 80);
     const optimistic: ViewMessage = {
       key: `opt-${uid()}`,
       role: "user",
@@ -1131,7 +1379,23 @@ export const useStore = create<PiStore>()((set, get) => ({
     set((s) => {
       const t = s.threads[threadId];
       if (!t) return s;
-      return { threads: { ...s.threads, [threadId]: { ...t, messages: [...t.messages, optimistic], isStreaming: true, error: undefined } } };
+      const hasUserMessage = t.messages.some((message) => message.role === "user");
+      return {
+        threads: {
+          ...s.threads,
+          [threadId]: {
+            ...t,
+            sessionName: t.isNewSession
+              ? (optimisticTitle || null)
+              : (t.sessionName || (!hasUserMessage && optimisticTitle ? optimisticTitle : null)),
+            isNewSession: false,
+            creatingSession: false,
+            messages: [...t.messages, optimistic],
+            isStreaming: true,
+            error: undefined,
+          },
+        },
+      };
     });
     // A disk-rendered or brand-new thread may not have a live process yet.
     // ensureConnected keeps the optimistic bubble across the connect/remap and
@@ -1248,16 +1512,33 @@ export const useStore = create<PiStore>()((set, get) => ({
   },
 
   newSessionInThread: async (id) => {
-    if (!(await get().ensureConnected(id))) return;
+    const current = get().threads[id];
+    if (!current) return;
+    // Reset the title before the RPC starts so the old session name cannot
+    // remain in the header while the new session is being created.
+    set((s) => (s.threads[id]
+      ? { threads: { ...s.threads, [id]: { ...s.threads[id], sessionName: null, isNewSession: true, creatingSession: true } } }
+      : s));
+    if (!(await get().ensureConnected(id))) {
+      set((s) => (s.threads[id] ? { threads: { ...s.threads, [id]: { ...s.threads[id], isNewSession: false, creatingSession: false } } } : s));
+      return;
+    }
     try {
       const res: any = await window.pi.thread.newSession(id);
-      if (res?.cancelled) return;
+      if (res?.cancelled) {
+        set((s) => (s.threads[id] ? { threads: { ...s.threads, [id]: { ...s.threads[id], isNewSession: false, creatingSession: false } } } : s));
+        return;
+      }
       const newId = res.threadId || id;
       const { views, toolRuns } = historyToView(res.messages || [], res.branchMessages || []);
       const thread: ThreadState = {
         ...emptyThread(res.cwd || get().threads[id]?.cwd || ""),
         sessionFile: res.sessionFile,
-        sessionName: res.sessionName,
+        // A newly created session starts unnamed; its first prompt supplies
+        // the display title. Do not carry the previous session name across.
+        sessionName: null,
+        isNewSession: true,
+        creatingSession: false,
         model: res.model,
         models: res.models || get().threads[id]?.models || [],
         thinking: res.thinkingLevel || "off",
@@ -1274,6 +1555,7 @@ export const useStore = create<PiStore>()((set, get) => ({
       });
       if (newId !== id) get().refreshProjects();
     } catch (e: any) {
+      set((s) => (s.threads[id] ? { threads: { ...s.threads, [id]: { ...s.threads[id], isNewSession: false, creatingSession: false } } } : s));
       get().pushToast("error", e?.message || "new session failed");
     }
   },
@@ -1481,7 +1763,28 @@ export const useStore = create<PiStore>()((set, get) => ({
   goToThread: async (cwd, file) => {
     const s = get();
     if (s.openThreadIds.includes(file)) {
-      set({ activeThreadId: file, activeProjectCwd: cwd, expandedProjects: { ...s.expandedProjects, [cwd]: true } });
+      // Re-activating an already rendered transcript must still make it an
+      // existing thread. A stale fresh-session marker would otherwise force
+      // the chat header to remain "New Thread" after switching back here.
+      const current = s.threads[file];
+      const sidebarTitle = findProjectThreadTitle(s.projects, file);
+      const firstUserText = current?.messages.find((message) => message.role === "user")?.text || "";
+      set((state) => ({
+        activeThreadId: file,
+        activeProjectCwd: cwd,
+        threads: state.threads[file]
+          ? {
+              ...state.threads,
+              [file]: {
+                ...state.threads[file],
+                sessionName: sidebarTitle || getDisplayThreadTitle(null, firstUserText) || state.threads[file].sessionName,
+                isNewSession: false,
+                creatingSession: false,
+              },
+            }
+          : state.threads,
+        expandedProjects: { ...state.expandedProjects, [cwd]: true },
+      }));
       return;
     }
     await s.openThread(cwd, file);
@@ -1573,6 +1876,22 @@ export const useStore = create<PiStore>()((set, get) => ({
     } catch (e: any) {
       get().pushToast("error", e?.message || "切换失败");
       get().loadPlugins();
+    }
+  },
+  installSkill: async (skill) => {
+    const zh = get().config?.language === "zh";
+    try {
+      const result: any = await window.pi.plugins.installSkill({ source: skill.source, skillId: skill.skillId });
+      if (!result?.ok) {
+        get().pushToast("error", `${zh ? "安装 skill 失败：" : "Skill installation failed: "}${String(result?.output || (zh ? "未知错误" : "Unknown error")).slice(-500)}`);
+        return false;
+      }
+      get().pushToast("success", `${zh ? "Skill 已安装：" : "Skill installed: "}${skill.name}`);
+      await get().loadPlugins();
+      return true;
+    } catch (e: any) {
+      get().pushToast("error", `${zh ? "安装 skill 失败：" : "Skill installation failed: "}${e?.message || e}`);
+      return false;
     }
   },
 

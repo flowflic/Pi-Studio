@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+import type { SkillHubSkill } from "../renderer/src/lib/types";
 
 /**
  * The renderer talks to the main process exclusively through this surface.
@@ -24,6 +25,8 @@ const api = {
     openProject: (absPath: string) => ipcRenderer.invoke("app:openProject", absPath),
     prewarm: (cwd: string) => ipcRenderer.invoke("app:prewarm", cwd),
     unpinProject: (absPath: string) => ipcRenderer.invoke("app:unpinProject", absPath),
+    setProjectPinned: (args: { cwd: string; pinned: boolean }) => ipcRenderer.invoke("app:setProjectPinned", args),
+    setThreadPinned: (args: { file: string; pinned: boolean }) => ipcRenderer.invoke("app:setThreadPinned", args),
     showOpenDialog: (kind: "folder" | "file" | "files") => ipcRenderer.invoke("app:showOpenDialog", kind),
     getFileTree: (cwd: string, rel?: string) => ipcRenderer.invoke("app:getFileTree", cwd, rel),
     fileExists: (absPath: string) => ipcRenderer.invoke("app:fileExists", absPath),
@@ -45,12 +48,36 @@ const api = {
     getSkills: (cwd?: string) => ipcRenderer.invoke("plugins:getSkills", cwd),
     setSkillEnabled: (path: string, enabled: boolean) => ipcRenderer.invoke("plugins:setSkillEnabled", { path, enabled }),
     updatePackages: (source?: string) => ipcRenderer.invoke("plugins:updatePackages", source),
+    getSkillsHubLeaderboard: () => ipcRenderer.invoke("skillsHub:leaderboard"),
+    searchSkillsHub: (query: string) => ipcRenderer.invoke("skillsHub:search", query),
+    getSkillDetails: (skill: SkillHubSkill) => ipcRenderer.invoke("skillsHub:detail", skill),
+    installSkill: (args: { source: string; skillId: string }) => ipcRenderer.invoke("skillsHub:install", args),
   },
   automation: {
     getTasks: () => ipcRenderer.invoke("automation:getTasks"),
     saveTask: (task: unknown) => ipcRenderer.invoke("automation:saveTask", task),
     deleteTask: (id: string) => ipcRenderer.invoke("automation:deleteTask", id),
     runNow: (id: string) => ipcRenderer.invoke("automation:runNow", id),
+  },
+  remote: {
+    getStatus: () => ipcRenderer.invoke("remote:getStatus"),
+    createPairing: () => ipcRenderer.invoke("remote:createPairing"),
+    enableSignaling: (manual = false) => ipcRenderer.invoke("remote:enableSignaling", { manual }),
+    disableSignaling: () => ipcRenderer.invoke("remote:disableSignaling"),
+    approvePairing: (connectionId: string) => ipcRenderer.invoke("remote:approvePairing", connectionId),
+    rejectPairing: (connectionId: string) => ipcRenderer.invoke("remote:rejectPairing", connectionId),
+    revokeDevice: (deviceId: string) => ipcRenderer.invoke("remote:revokeDevice", deviceId),
+    getTransportConfig: () => ipcRenderer.invoke("remote:getTransportConfig"),
+    setConfig: (patch: { signalingUrl?: string }) => ipcRenderer.invoke("remote:setConfig", patch),
+    transportOpen: (args: { connectionId: string; sessionId?: string }) => ipcRenderer.invoke("remote:transportOpen", args),
+    transportClose: (args: { connectionId: string; reason?: string }) => ipcRenderer.invoke("remote:transportClose", args),
+    transportStatus: (args: { connectionId: string; state?: string; candidateType?: string; localCandidateType?: string; remoteCandidateType?: string }) =>
+      ipcRenderer.invoke("remote:transportStatus", args),
+    transportFrame: (args: { connectionId: string; frame: string }) => ipcRenderer.invoke("remote:transportFrame", args),
+    sendSignal: (args: { connectionId: string; payload: Record<string, unknown> }) => ipcRenderer.invoke("remote:sendSignal", args),
+    onSignal: (cb: (p: { connectionId: string; message: any }) => void) => on("remote:signal", cb),
+    onOutbound: (cb: (p: { connectionId: string; frame: string }) => void) => on("remote:outbound", cb),
+    onPairingRequest: (cb: (p: { connectionId: string; deviceId: string; deviceName: string }) => void) => on("remote:pairing-request", cb),
   },
   thread: {
     open: (args: { cwd: string; sessionFile?: string; name?: string; permission?: "sandbox" | "full" }) => ipcRenderer.invoke("thread:open", args),
@@ -106,6 +133,7 @@ const api = {
     error: (cb: (p: { threadId: string; message: string }) => void) => on("pi:error", cb),
     automation: (cb: (p: { type: "start" | "done"; taskId: string; name: string; ok?: boolean; error?: string }) => void) =>
       on("pi:automation", cb),
+    projectsChanged: (cb: (p: { cwd?: string; sessionFile?: string }) => void) => on("pi:projects-changed", cb),
     appUpdate: (cb: (p: { stage: string; message: string; pct?: number }) => void) => on("pi:appUpdate", cb),
     coreUpdate: (cb: (p: { stage: string; message: string; pct?: number }) => void) => on("pi:coreUpdate", cb),
   },

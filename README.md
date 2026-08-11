@@ -2,8 +2,6 @@
 
 Pi Studio is an independent Electron desktop client for the [Pi coding agent](https://github.com/earendil-works/pi). It brings Pi projects, threads, model configuration, extensions, permission controls, automation, and file previews into one desktop workspace.
 
-Current release: `0.3.1` (Windows x64 and macOS arm64 installers).
-
 > Pi Studio is an independent community project. It is not affiliated with or endorsed by the Pi maintainers.
 
 ## Features

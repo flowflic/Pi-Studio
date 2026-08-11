@@ -4,7 +4,7 @@ import { useStore } from "../store";
 import { fileIcon, formatTokens } from "../lib/format";
 import { useOutsideClose } from "../lib/useOutsideClose";
 import type { FileNode } from "../lib/types";
-import { Plus, Folder, Archive, ChevronRight, Edit, Clock, At, Search, Settings, Help, Refresh, Gauge, Sidebar as SidebarIcon } from "./icons";
+import { Plus, Folder, Archive, Star, ChevronRight, Edit, Clock, At, Search, Settings, Help, Refresh, Gauge, Smartphone, Sidebar as SidebarIcon } from "./icons";
 
 const treeKey = (cwd: string, rel?: string) => `${cwd}::${rel || ""}`;
 const SIDEBAR_WIDTH_KEY = "pi-studio.sidebar-width";
@@ -22,7 +22,7 @@ function initialSidebarWidth(): number {
   }
 }
 
-export function Sidebar() {
+export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: () => void; remoteOpen?: boolean }) {
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const projects = useStore((s) => s.projects);
   const activeProjectCwd = useStore((s) => s.activeProjectCwd);
@@ -45,13 +45,16 @@ export function Sidebar() {
   const [usageOpen, setUsageOpen] = useState(false);
   const [usageData, setUsageData] = useState<any>(null);
   const [usageLoading, setUsageLoading] = useState(false);
-  const [projectMenu, setProjectMenu] = useState<{ cwd: string; name: string; x: number; y: number } | null>(null);
+  const [projectMenu, setProjectMenu] = useState<{ cwd: string; name: string; pinned: boolean; x: number; y: number } | null>(null);
+  const [threadMenu, setThreadMenu] = useState<{ file: string; name: string; pinned: boolean; x: number; y: number } | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(initialSidebarWidth);
   const usageRef = useRef<HTMLDivElement>(null);
   const projectMenuRef = useRef<HTMLDivElement>(null);
+  const threadMenuRef = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<{ startX: number; startWidth: number; width: number } | null>(null);
   useOutsideClose(usageRef, usageOpen, () => setUsageOpen(false));
   useOutsideClose(projectMenuRef, !!projectMenu, () => setProjectMenu(null));
+  useOutsideClose(threadMenuRef, !!threadMenu, () => setThreadMenu(null));
 
   useEffect(() => {
     const onPointerMove = (event: PointerEvent) => {
@@ -132,7 +135,9 @@ export function Sidebar() {
   const openThread = useStore((s) => s.openThread);
   const goToThread = useStore((s) => s.goToThread);
   const openProjectFolder = useStore((s) => s.openProjectFolder);
+  const setProjectPinned = useStore((s) => s.setProjectPinned);
   const unpinProject = useStore((s) => s.unpinProject);
+  const setThreadPinned = useStore((s) => s.setThreadPinned);
   const archiveProject = useStore((s) => s.archiveProject);
   const archiveThread = useStore((s) => s.archiveThread);
   const setSidebarTab = useStore((s) => s.setSidebarTab);
@@ -227,9 +232,11 @@ export function Sidebar() {
                     onContextMenu={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
+                      setThreadMenu(null);
                       setProjectMenu({
                         cwd: p.cwd,
                         name: p.name,
+                        pinned: !!p.pinned,
                         x: Math.min(event.clientX, window.innerWidth - 190),
                         y: Math.min(event.clientY, window.innerHeight - 70),
                       });
@@ -239,6 +246,11 @@ export function Sidebar() {
                       <ChevronRight size={10} />
                     </span>
                     <Folder size={15} />
+                    {p.pinned && (
+                      <span className="pin-indicator" title={language === "zh" ? "已置顶项目" : "Pinned project"}>
+                        <Star size={12} />
+                      </span>
+                    )}
                     <span className="pname" title={p.cwd}>
                       {p.name}
                     </span>
@@ -253,16 +265,18 @@ export function Sidebar() {
                     >
                       <Plus size={13} />
                     </button>
-                    <button
-                      className="pact"
-                      title="Unpin"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        unpinProject(p.cwd);
-                      }}
-                    >
-                      ×
-                    </button>
+                    {p.pinned && (
+                      <button
+                        className="pact"
+                        title={language === "zh" ? "取消置顶项目" : "Unpin project"}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          unpinProject(p.cwd);
+                        }}
+                      >
+                        ×
+                      </button>
+                    )}
                   </div>
                   {open && (
                     <div className="thread-list">
@@ -277,6 +291,18 @@ export function Sidebar() {
                             role="button"
                             tabIndex={0}
                             onClick={openThread}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              setProjectMenu(null);
+                              setThreadMenu({
+                                file: t.file,
+                                name: t.title,
+                                pinned: !!t.pinned,
+                                x: Math.min(event.clientX, window.innerWidth - 190),
+                                y: Math.min(event.clientY, window.innerHeight - 70),
+                              });
+                            }}
                             onKeyDown={(event) => {
                               if (event.target !== event.currentTarget) return;
                               if (event.key === "Enter" || event.key === " ") {
@@ -288,6 +314,11 @@ export function Sidebar() {
                           >
                             <div className="thread-title">
                               {running && <span className="thread-running" />}
+                              {t.pinned && (
+                                <span className="thread-pin" title={language === "zh" ? "已置顶线程" : "Pinned thread"}>
+                                  <Star size={11} />
+                                </span>
+                              )}
                               <span className="tt-text">{t.title}</span>
                               <button
                                 type="button"
@@ -325,6 +356,14 @@ export function Sidebar() {
           <Settings size={15} />
         </button>
         <span className="sb-foot-spacer" aria-hidden="true" />
+        <button
+          className={`iconbtn ${remoteOpen ? "on" : ""}`}
+          title={language === "zh" ? "手机远程控制" : "Phone remote control"}
+          aria-label={language === "zh" ? "打开手机远程控制配置" : "Open phone remote control settings"}
+          onClick={onOpenRemote}
+        >
+          <Smartphone size={15} />
+        </button>
         <div className="usage-wrap" ref={usageRef}>
           <button className={`iconbtn ${usageOpen ? "on" : ""}`} title="Pi 合计 token 用量" onClick={toggleUsage}>
             <Gauge size={15} />
@@ -368,12 +407,54 @@ export function Sidebar() {
           <button
             role="menuitem"
             onClick={() => {
+              const item = projectMenu;
+              setProjectMenu(null);
+              void setProjectPinned(item.cwd, !item.pinned);
+            }}
+          >
+            {projectMenu.pinned
+              ? language === "zh"
+                ? "取消置顶项目"
+                : "Unpin project"
+              : language === "zh"
+                ? "置顶项目"
+                : "Pin project"}
+          </button>
+          <button
+            role="menuitem"
+            onClick={() => {
               const cwd = projectMenu.cwd;
               setProjectMenu(null);
               archiveProject(cwd);
             }}
           >
             归档项目
+          </button>
+        </div>
+      )}
+      {threadMenu && (
+        <div
+          ref={threadMenuRef}
+          className="project-context-menu"
+          style={{ left: threadMenu.x, top: threadMenu.y }}
+          role="menu"
+        >
+          <div className="project-context-name" title={threadMenu.file}>{threadMenu.name}</div>
+          <button
+            role="menuitem"
+            onClick={() => {
+              const item = threadMenu;
+              setThreadMenu(null);
+              void setThreadPinned(item.file, !item.pinned);
+            }}
+          >
+            {threadMenu.pinned
+              ? language === "zh"
+                ? "取消置顶线程"
+                : "Unpin thread"
+              : language === "zh"
+                ? "置顶线程"
+                : "Pin thread"}
           </button>
         </div>
       )}

@@ -1,11 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { extname } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
 import { checkForAppUpdate, downloadAppUpdate, installAppUpdate } from "./app-updater";
 import { checkForCoreUpdate, installCoreUpdate } from "./core-updater";
-import { getConfig, getConfigDir, updateConfig, type AutomationTask } from "./config";
+import {
+  BUILT_IN_REMOTE_STUN_URLS,
+  DEFAULT_REMOTE_SIGNALING_URL,
+  getConfig,
+  getConfigDir,
+  updateConfig,
+  type AutomationTask,
+} from "./config";
 import { listDir } from "./fs-service";
 import { createHtmlPreviewUrl } from "./html-preview-protocol";
 import {
@@ -33,7 +40,23 @@ import {
   setPackageEnabled,
   setSkillEnabled,
 } from "./plugins";
+import { getSkillDetails, getSkillsHubLeaderboard, installSkillFromHub, searchSkillsHub } from "./skills-hub";
 import { runTaskNow, startScheduler } from "./automation";
+import { loadOrCreateIdentity, opaqueId } from "./remote/identity";
+import { RemoteHost } from "./remote/host";
+import { FilePreviewService, ProjectService, RemoteEventHub, ThreadService } from "./remote/services";
+import { RemoteService, type RemoteBackend } from "./remote/service";
+import {
+  RemoteProtocolError,
+  type RemoteFileArtifact,
+  type RemoteMessage,
+  type RemoteModelOption,
+  type RemoteProject,
+  type RemoteSkill,
+  type RemoteThreadEventPayload,
+  type RemoteThreadSnapshot,
+  type RemoteThreadState,
+} from "./remote/protocol";
 
 type PermissionLevel = "sandbox" | "full";
 
@@ -56,6 +79,14 @@ interface BridgeHandle {
 }
 
 const bridges = new Map<string, BridgeHandle>();
+let activeRemoteHost: RemoteHost | null = null;
+
+// Opening a folder makes it available for the current workspace session, but
+// it must not silently become a persisted pinned project. Keep empty folders
+// visible until they have a session on disk; explicit pinning still goes
+// through app:setProjectPinned and remains persisted in the config.
+const openedProjects = new Map<string, ProjectSummary>();
+let openedProjectOrder: string[] = [];
 
 const IMG_MIME: Record<string, string> = {
   ".png": "image/png",
@@ -316,13 +347,975 @@ export function stopAllBridges(): void {
   dropWarmBridge();
 }
 
+export function stopRemoteHost(): void {
+  activeRemoteHost?.stop();
+  activeRemoteHost = null;
+}
+
 export function registerIpc(getWin: () => BrowserWindow | null): void {
+  let remotePublish: ((channel: string, payload: unknown) => void) | null = null;
   const send = (channel: string, payload: unknown) => {
     const w = getWin();
     if (w && !w.isDestroyed()) w.webContents.send(channel, payload);
+    remotePublish?.(channel, payload);
   };
   sendToRenderer = send;
   warmEnabled = true;
+  // ---- remote companion backend -----------------------------------------
+  // The remote surface is deliberately built beside the existing renderer IPC
+  // rather than exposing renderer channels to the network. It receives only
+  // opaque project/thread ids and calls the same PiBridge registry used by the
+  // desktop UI.
+  const remoteIdentity = loadOrCreateIdentity(getConfigDir());
+  const remoteDrafts = new Map<string, { cwd: string; projectId: string; name?: string; permission: PermissionLevel; sessionFile?: string; localId?: string }>();
+  const remoteLocalToId = new Map<string, string>();
+  const remoteEventHub = new RemoteEventHub();
+  const remoteUiRequests = new Map<string, { threadId: string; localId: string }>();
+  let remoteProjectsCache: { expiresAt: number; value: ProjectSummary[] } | null = null;
+  let remoteProjectsLoad: Promise<ProjectSummary[]> | null = null;
+  const invalidateRemoteProjects = () => {
+    remoteProjectsCache = null;
+  };
+
+  const remoteProjectId = (cwd: string) => opaqueId(remoteIdentity.hmacSecret, `project:${resolve(cwd).toLowerCase()}`);
+  const remoteThreadId = (file: string) => opaqueId(remoteIdentity.hmacSecret, `thread:${resolve(file).toLowerCase()}`);
+
+  function remoteText(content: unknown): string {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content.map((block: any) => (block?.type === "text" ? String(block.text || "") : "")).filter(Boolean).join("\n");
+  }
+
+  const REMOTE_FILE_TOOL = /(?:^|[_-])(write|edit|create|save|export|apply[_-]?patch)(?:[_-]|$)/i;
+  const REMOTE_COMMAND_TOOL = /(?:^|[_-])(bash|shell|exec|execute|command|run|python)(?:[_-]|$)/i;
+  const REMOTE_OUTPUT_EXTENSIONS = "html?|pdf|csv|xlsx?|docx|pptx|json|md|txt|xml|svg|png|jpe?g|gif|webp|zip|tar|gz|mp4|webm|py|js|jsx|ts|tsx|css";
+  const REMOTE_ABSOLUTE_OUTPUT_PATH = new RegExp(
+    String.raw`(?:[a-zA-Z]:[\\/]|/[a-zA-Z]/)[^"'<>\r\n|?*]+?\.(?:${REMOTE_OUTPUT_EXTENSIONS})`,
+    "gi",
+  );
+  const REMOTE_QUOTED_OUTPUT_PATH = new RegExp(
+    String.raw`["']([^"'<>\r\n|?*]+?\.(?:${REMOTE_OUTPUT_EXTENSIONS}))["']`,
+    "gi",
+  );
+  const REMOTE_SIMPLE_OUTPUT_PATH = new RegExp(
+    String.raw`(?:^|[\s(])((?:\.{0,2}[\\/])?[\w\u3400-\u9fff@().+ -]+(?:[\\/][\w\u3400-\u9fff@().+ -]+)*\.(?:${REMOTE_OUTPUT_EXTENSIONS}))(?=$|[\s,.;:!?])`,
+    "gi",
+  );
+
+  function remoteCleanPath(value: unknown): string | null {
+    if (typeof value !== "string") return null;
+    const cleaned = value.trim().replace(/^["']|["']$/g, "");
+    return cleaned || null;
+  }
+
+  function remotePathFromArgs(args: unknown): string | null {
+    if (typeof args === "string") {
+      try {
+        return remotePathFromArgs(JSON.parse(args));
+      } catch {
+        return null;
+      }
+    }
+    if (!args || typeof args !== "object" || Array.isArray(args)) return null;
+    const record = args as Record<string, unknown>;
+    for (const key of ["path", "filePath", "file_path", "filename", "file"]) {
+      const path = remoteCleanPath(record[key]);
+      if (path) return path;
+    }
+    return null;
+  }
+
+  function remoteToolName(value: unknown): string {
+    return String(value || "")
+      .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+      .replace(/[^a-zA-Z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .toLowerCase();
+  }
+
+  function remoteIsFileTool(value: unknown): boolean {
+    return REMOTE_FILE_TOOL.test(remoteToolName(value));
+  }
+
+  function remoteIsCommandTool(value: unknown): boolean {
+    return REMOTE_COMMAND_TOOL.test(remoteToolName(value));
+  }
+
+  function remoteRelativeArtifactPath(rawPath: string, cwd: string): string | null {
+    const root = resolve(cwd);
+    const absolute = /^[a-zA-Z]:[\\/]/.test(rawPath) || rawPath.startsWith("\\\\") || isAbsolute(rawPath)
+      ? resolve(rawPath)
+      : resolve(root, rawPath);
+    const relativePath = relative(root, absolute);
+    if (!relativePath || isAbsolute(relativePath) || relativePath === ".." || relativePath.startsWith(`..${sep}`)) return null;
+    const normalized = relativePath.replace(/\\/g, "/");
+    if (!normalized || normalized.length > 1_000 || normalized.split("/").includes("..")) return null;
+    if (!existsSync(absolute)) return null;
+    return normalized;
+  }
+
+  function remoteArtifactFromPath(rawPath: string, cwd: string, action: RemoteFileArtifact["action"]): RemoteFileArtifact | null {
+    const path = remoteRelativeArtifactPath(rawPath, cwd);
+    if (!path) return null;
+    const name = basename(path);
+    return {
+      name: name.slice(0, 260),
+      path,
+      ext: extname(name).toLowerCase().slice(0, 12),
+      action,
+    };
+  }
+
+  function remoteOutputPathsFromText(text: string): string[] {
+    const paths: string[] = [];
+    REMOTE_ABSOLUTE_OUTPUT_PATH.lastIndex = 0;
+    REMOTE_QUOTED_OUTPUT_PATH.lastIndex = 0;
+    REMOTE_SIMPLE_OUTPUT_PATH.lastIndex = 0;
+    for (const match of text.matchAll(REMOTE_ABSOLUTE_OUTPUT_PATH)) paths.push(match[0]);
+    for (const match of text.matchAll(REMOTE_QUOTED_OUTPUT_PATH)) paths.push(match[1]);
+    for (const match of text.matchAll(REMOTE_SIMPLE_OUTPUT_PATH)) paths.push(match[1]);
+    return paths;
+  }
+
+  function remoteArtifactsByMessage(messages: any[], cwd: string): Map<number, RemoteFileArtifact[]> {
+    const toolCalls = new Map<string, { name: string; args: unknown }>();
+    const toolResults = new Map<string, { text: string; isError: boolean }>();
+    for (const message of messages || []) {
+      if (message?.role === "assistant" && Array.isArray(message.content)) {
+        for (const block of message.content) {
+          if (block?.type !== "toolCall" || typeof block.id !== "string") continue;
+          toolCalls.set(block.id, { name: String(block.name || ""), args: block.arguments });
+        }
+      }
+      if (message?.role === "toolResult" && typeof message.toolCallId === "string") {
+        toolResults.set(message.toolCallId, {
+          text: remoteText(message.content),
+          isError: !!message.isError,
+        });
+      }
+    }
+
+    const result = new Map<number, RemoteFileArtifact[]>();
+    const round = new Map<string, RemoteFileArtifact>();
+    let lastAssistantIndex = -1;
+    // A tool round can contain several assistant messages: thinking, one or
+    // more tool calls, and finally the user-facing answer. Keep the output on
+    // that final visible answer so mobile renders it directly after the text.
+    let lastReplyIndex = -1;
+    const addToRound = (rawPath: string, action: RemoteFileArtifact["action"]) => {
+      const artifact = remoteArtifactFromPath(rawPath, cwd, action);
+      if (!artifact) return;
+      const key = artifact.path.toLowerCase();
+      const previous = round.get(key);
+      round.set(key, previous
+        ? { ...artifact, action: previous.action === "created" ? "created" : artifact.action }
+        : artifact);
+    };
+    const flushRound = () => {
+      const targetIndex = lastReplyIndex >= 0 ? lastReplyIndex : lastAssistantIndex;
+      if (targetIndex < 0 || round.size === 0) return;
+      result.set(targetIndex, [...round.values()]);
+      round.clear();
+    };
+
+    for (let index = 0; index < (messages || []).length; index += 1) {
+      const message = messages[index];
+      if (message?.role === "user") {
+        flushRound();
+        lastAssistantIndex = -1;
+        lastReplyIndex = -1;
+        continue;
+      }
+      if (message?.role !== "assistant") continue;
+      lastAssistantIndex = index;
+      const hasToolCall = Array.isArray(message.content) && message.content.some((block: any) => block?.type === "toolCall");
+      if (remoteText(message.content).trim() && !hasToolCall) lastReplyIndex = index;
+      if (!Array.isArray(message.content)) continue;
+      for (const block of message.content) {
+        if (block?.type !== "toolCall" || typeof block.id !== "string") continue;
+        const call = toolCalls.get(block.id);
+        const toolResult = toolResults.get(block.id);
+        if (!call || toolResult?.isError) continue;
+        const toolName = remoteToolName(call.name);
+        if (remoteIsFileTool(toolName)) {
+          // Some Pi versions expose the arguments on the collected call and
+          // others only retain them on the content block. Accept both forms.
+          const rawPath = remotePathFromArgs(call.args) || remotePathFromArgs(block.arguments);
+          if (rawPath) addToRound(rawPath, /edit|patch|replace|update/i.test(toolName) ? "updated" : "created");
+        }
+        if (remoteIsCommandTool(toolName) && toolResult?.text) {
+          for (const rawPath of remoteOutputPathsFromText(toolResult.text)) addToRound(rawPath, "created");
+        }
+      }
+    }
+    flushRound();
+    return result;
+  }
+
+  function remoteSafeString(value: string): string {
+    return value
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
+      .replace(/(?:[A-Za-z]:[\\/]|\\\\|\/(?:Users|home|private|var|tmp|workspace)\/)[^\s"'<>`]*/gi, "[path]")
+      .slice(0, 100_000);
+  }
+
+  function modelArray(value: unknown): unknown[] {
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === "object" && Array.isArray((value as any).models)) {
+      return (value as any).models;
+    }
+    return [];
+  }
+
+  function remoteModelOptions(value: unknown): RemoteModelOption[] {
+    if (!Array.isArray(value)) return [];
+    const seen = new Set<string>();
+    const options: RemoteModelOption[] = [];
+    for (const item of value.slice(0, 200)) {
+      if (!item || typeof item !== "object") continue;
+      const provider = String((item as any).provider || "").trim().slice(0, 160);
+      const id = String((item as any).id || "").trim().slice(0, 240);
+      if (!provider || !id) continue;
+      const key = `${provider}\u0000${id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const option: RemoteModelOption = { provider, id };
+      if (typeof (item as any).name === "string" && (item as any).name.trim()) {
+        option.name = remoteSafeString((item as any).name.trim()).slice(0, 180);
+      }
+      if (typeof (item as any).reasoning === "boolean") option.reasoning = (item as any).reasoning;
+      options.push(option);
+    }
+    return options;
+  }
+
+  function configuredRemoteModelOptions(): RemoteModelOption[] {
+    try {
+      const configured = readModelsFile();
+      const entries = Object.entries(configured.providers || {}).flatMap(([provider, definition]) =>
+        (definition.models || []).map((model: any) => ({ ...model, provider })),
+      );
+      return remoteModelOptions(entries);
+    } catch {
+      return [];
+    }
+  }
+
+  function remoteSkills(value: unknown, cwd: string): RemoteSkill[] {
+    const skills: RemoteSkill[] = [];
+    const seen = new Set<string>();
+    const add = (rawName: unknown, description?: unknown) => {
+      const raw = String(rawName || "").trim().replace(/^\/+/, "");
+      const withoutPrefix = raw.replace(/^skill:/i, "");
+      // Slash invocations are a single safe token. Never forward a path,
+      // shell fragment, or arbitrary command text to the phone.
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/.test(withoutPrefix)) return;
+      const command = `skill:${withoutPrefix}`;
+      if (seen.has(command)) return;
+      seen.add(command);
+      const skill: RemoteSkill = { name: withoutPrefix, command };
+      if (typeof description === "string" && description.trim()) {
+        skill.description = remoteSafeString(description.trim()).slice(0, 600);
+      }
+      skills.push(skill);
+    };
+
+    if (Array.isArray(value)) {
+      for (const item of value.slice(0, 300)) {
+        if (!item || typeof item !== "object" || (item as any).source !== "skill") continue;
+        add((item as any).name, (item as any).description);
+      }
+    }
+    // Keep the list useful even when an older Pi RPC omits skill commands.
+    for (const skill of listSkills(cwd).slice(0, 300)) {
+      if (skill.enabled) add(skill.name);
+    }
+    return skills.slice(0, 200);
+  }
+
+  // File mtime values on Windows can contain fractional milliseconds. The
+  // versioned remote protocol exposes timestamps as integer milliseconds so
+  // Kotlin Long decoders and other strict clients receive stable values.
+  function remoteTimestamp(value: unknown): number {
+    const timestamp = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(timestamp) ? Math.trunc(timestamp) : 0;
+  }
+
+  function remoteSafeEventValue(value: unknown, depth = 0): unknown {
+    if (depth > 4 || value === null || typeof value === "number" || typeof value === "boolean") return value;
+    if (typeof value === "string") return remoteSafeString(value);
+    if (Array.isArray(value)) return value.slice(0, 50).map((item) => remoteSafeEventValue(item, depth + 1));
+    if (!value || typeof value !== "object") return undefined;
+    const blocked = /(?:^|)(?:cwd|path|file|absolute|command|args|arguments|env|secret|token|authorization|credential|input)$/i;
+    const output: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>).slice(0, 40)) {
+      if (blocked.test(key)) continue;
+      const safe = remoteSafeEventValue(item, depth + 1);
+      if (safe !== undefined) output[key] = safe;
+    }
+    return output;
+  }
+
+  function remoteUiRequest(request: any): Record<string, unknown> | null {
+    const method = typeof request?.method === "string" ? request.method : "";
+    // These are fire-and-forget renderer UI updates, not remote approval
+    // prompts. Forwarding setStatus/setWidget as a dialog makes the Android
+    // client show an empty modal titled "setStatus" and blocks the thread.
+    // The remote client currently supports only actionable responses.
+    if (!(method === "confirm" || method === "select" || method === "input")) return null;
+    const allowed = ["id", "method", "title", "message", "options", "placeholder", "prefill", "notifyType", "timeout"];
+    const result: Record<string, unknown> = {};
+    for (const key of allowed) {
+      if (request[key] === undefined) continue;
+      result[key] = remoteSafeEventValue(request[key]);
+    }
+    return result;
+  }
+
+  function remoteMessages(messages: any[], cwd: string): RemoteMessage[] {
+    // Keep the initial history response well below the SCTP data-channel
+    // message budget. `text` remains available for previews and compatibility,
+    // while text blocks preserve the actual thinking/tool/reply order in the
+    // mobile renderer.
+    let imageBudget = 400_000;
+    const source = (messages || []).slice(-80);
+    const artifactsByMessage = remoteArtifactsByMessage(source, cwd);
+    type RemoteBlock = NonNullable<RemoteMessage["blocks"]>[number];
+    const toolResults = new Map<string, { text: string; isError: boolean }>();
+    const toolCallIds = new Set<string>();
+    for (const message of source) {
+      if (message?.role === "assistant" && Array.isArray(message.content)) {
+        for (const block of message.content) {
+          if (block?.type === "toolCall" && typeof block.id === "string") toolCallIds.add(block.id);
+        }
+      }
+      if (message?.role === "toolResult" && typeof message.toolCallId === "string") {
+        toolResults.set(message.toolCallId, {
+          text: remoteText(message.content).slice(0, 12_000),
+          isError: !!message.isError,
+        });
+      }
+    }
+
+    const blocksFor = (message: any): RemoteBlock[] => {
+      if (typeof message?.content === "string") {
+        const text = message.content.slice(0, 12_000);
+        return text ? [{ type: "text", text }] : [];
+      }
+      if (!Array.isArray(message?.content)) return [];
+      return message.content.slice(0, 24).map((block: any): RemoteBlock | null => {
+        if (block?.type === "text") return { type: "text", text: String(block.text || "").slice(0, 12_000) };
+        if (block?.type === "thinking") return { type: "thinking", text: String(block.thinking || "").slice(0, 12_000) };
+        if (block?.type === "toolCall") {
+          const result = typeof block.id === "string" ? toolResults.get(block.id) : undefined;
+          return {
+            type: "tool",
+            name: String(block.name || "tool"),
+            running: result == null,
+            result: result?.text || undefined,
+          };
+        }
+        if (block?.type === "image" && typeof block.data === "string" && block.data.length <= 400_000 && imageBudget >= block.data.length) {
+          imageBudget -= block.data.length;
+          const mimeType = typeof block.mimeType === "string" && /^image\/(jpeg|png|webp|gif)$/.test(block.mimeType)
+            ? block.mimeType
+            : "image/jpeg";
+          return { type: "image", data: block.data, mimeType };
+        }
+        return null;
+      }).filter((block: RemoteBlock | null): block is RemoteBlock => block !== null);
+    };
+
+    const textFor = (message: any): string | undefined => remoteText(message?.content).slice(0, 12_000) || undefined;
+    const mergeArtifacts = (current: RemoteFileArtifact[] | undefined, next: RemoteFileArtifact[] | undefined): RemoteFileArtifact[] | undefined => {
+      const merged = [...(current || [])];
+      const seen = new Set(merged.map((artifact) => artifact.path.toLowerCase()));
+      for (const artifact of next || []) {
+        if (seen.has(artifact.path.toLowerCase())) continue;
+        seen.add(artifact.path.toLowerCase());
+        merged.push(artifact);
+      }
+      return merged.length ? merged : undefined;
+    };
+
+    const output: RemoteMessage[] = [];
+    let assistantRound: RemoteMessage | null = null;
+    let unmatchedToolOutputs: string[] = [];
+    const flushAssistantRound = () => {
+      if (!assistantRound) return;
+      if (unmatchedToolOutputs.length) {
+        assistantRound = {
+          ...assistantRound,
+          blocks: [...(assistantRound.blocks || []), ...unmatchedToolOutputs.map((result): RemoteBlock => ({
+            type: "tool",
+            name: "Tool output",
+            running: false,
+            result: result || undefined,
+          }))],
+        };
+        unmatchedToolOutputs = [];
+      }
+      output.push(assistantRound);
+      assistantRound = null;
+    };
+
+    const appendAssistant = (message: any, index: number) => {
+      const text = textFor(message);
+      const blocks = blocksFor(message);
+      const artifacts = artifactsByMessage.get(index);
+      if (!assistantRound) {
+        assistantRound = {
+          id: String(message?.id || `assistant-${index}`),
+          role: "assistant",
+          text,
+          blocks: blocks.length ? blocks : undefined,
+          artifacts: artifacts?.length ? artifacts : undefined,
+          timestamp: typeof message?.timestamp === "number" ? message.timestamp : undefined,
+          provider: typeof message?.provider === "string" ? message.provider : undefined,
+          model: typeof message?.model === "string" ? message.model : undefined,
+          stopReason: typeof message?.stopReason === "string" ? message.stopReason : undefined,
+        };
+        return;
+      }
+      assistantRound = {
+        ...assistantRound,
+        text: [assistantRound.text, text].filter(Boolean).join("\n\n") || undefined,
+        blocks: [...(assistantRound.blocks || []), ...blocks].slice(0, 80),
+        artifacts: mergeArtifacts(assistantRound.artifacts, artifacts),
+        timestamp: assistantRound.timestamp ?? (typeof message?.timestamp === "number" ? message.timestamp : undefined),
+        provider: assistantRound.provider || (typeof message?.provider === "string" ? message.provider : undefined),
+        model: assistantRound.model || (typeof message?.model === "string" ? message.model : undefined),
+        stopReason: typeof message?.stopReason === "string" ? message.stopReason : assistantRound.stopReason,
+      };
+    };
+
+    source.forEach((message: any, index) => {
+      if (message?.role === "assistant") {
+        appendAssistant(message, index);
+        return;
+      }
+      if (message?.role === "toolResult") {
+        // Tool results belonging to a known call are rendered inside that
+        // assistant round by blocksFor(). Keep an unmatched result visible
+        // without creating a second avatar for the same round.
+        const id = typeof message.toolCallId === "string" ? message.toolCallId : "";
+        if (!id || !toolCallIds.has(id)) {
+          const result = remoteText(message.content).slice(0, 12_000);
+          if (assistantRound) {
+            unmatchedToolOutputs.push(result);
+          } else if (result) {
+            output.push({ id: String(message?.id || `tool-${index}`), role: "tool", text: result });
+          }
+        }
+        return;
+      }
+
+      flushAssistantRound();
+      const role = message?.role === "user" || message?.role === "system" ? message.role : "system";
+      const blocks = blocksFor(message);
+      const artifacts = artifactsByMessage.get(index);
+      output.push({
+        id: String(message?.id || `${role}-${index}`),
+        role,
+        text: textFor(message),
+        blocks: blocks.length ? blocks : undefined,
+        artifacts: artifacts?.length ? artifacts : undefined,
+        timestamp: typeof message?.timestamp === "number" ? message.timestamp : undefined,
+        provider: typeof message?.provider === "string" ? message.provider : undefined,
+        model: typeof message?.model === "string" ? message.model : undefined,
+        stopReason: typeof message?.stopReason === "string" ? message.stopReason : undefined,
+      });
+    });
+    flushAssistantRound();
+    return output;
+  }
+
+  async function remoteVisibleProjects(): Promise<ProjectSummary[]> {
+    const now = Date.now();
+    if (remoteProjectsCache && remoteProjectsCache.expiresAt > now) return remoteProjectsCache.value;
+    if (remoteProjectsLoad) return remoteProjectsLoad;
+    remoteProjectsLoad = (async () => {
+      const scanned = await scanProjects();
+      const pinned = getConfig().pinnedProjects || [];
+      const archived = new Set((getConfig().archivedProjects || []).map((cwd) => cwd.toLowerCase()));
+      const archivedThreads = new Set((getConfig().archivedThreads || []).map((thread) => thread.file.toLowerCase()));
+      const visible = scanned
+        .filter((project) => !archived.has(project.cwd.toLowerCase()))
+        .map((project) => ({ ...project, threads: project.threads.filter((thread) => !archivedThreads.has(thread.file.toLowerCase())) }));
+      const byCwd = new Map(visible.map((project) => [project.cwd, project]));
+      for (const cwd of pinned) {
+        if (archived.has(cwd.toLowerCase()) || byCwd.has(cwd)) continue;
+        visible.push({ cwd, name: basename(cwd) || cwd, threads: [] });
+      }
+      visible.sort((a, b) => (b.threads[0]?.updatedAt || 0) - (a.threads[0]?.updatedAt || 0));
+      // The projects screen already fetched this index. Keep it warm while
+      // the user moves between threads; writes explicitly invalidate it.
+      remoteProjectsCache = { expiresAt: Date.now() + 30_000, value: visible };
+      return visible;
+    })();
+    try {
+      return await remoteProjectsLoad;
+    } finally {
+      remoteProjectsLoad = null;
+    }
+  }
+
+  async function remoteProject(projectId: string): Promise<ProjectSummary> {
+    const project = (await remoteVisibleProjects()).find((candidate) => remoteProjectId(candidate.cwd) === projectId);
+    if (!project) throw new RemoteProtocolError("NOT_FOUND", "Project not found");
+    return project;
+  }
+
+  async function remoteThread(threadId: string): Promise<{ id: string; projectId: string; cwd: string; sessionFile?: string; name?: string; permission?: PermissionLevel; localId?: string }> {
+    const draft = remoteDrafts.get(threadId);
+    if (draft) return { id: threadId, projectId: draft.projectId, cwd: draft.cwd, sessionFile: draft.sessionFile, name: draft.name, permission: draft.permission, localId: draft.localId };
+    for (const project of await remoteVisibleProjects()) {
+      for (const thread of project.threads) {
+        if (remoteThreadId(thread.file) === threadId) {
+          remoteLocalToId.set(thread.file, threadId);
+          return {
+            id: threadId,
+            projectId: remoteProjectId(project.cwd),
+            cwd: project.cwd,
+            sessionFile: thread.file,
+            permission: resolvePermission(thread.file, undefined),
+            localId: thread.file,
+          };
+        }
+      }
+    }
+    throw new RemoteProtocolError("NOT_FOUND", "Thread not found");
+  }
+
+  function remoteDraftIdForSessionFile(file: string): string | undefined {
+    const normalized = resolve(file).toLowerCase();
+    for (const [id, draft] of remoteDrafts) {
+      if (draft.sessionFile && resolve(draft.sessionFile).toLowerCase() === normalized) return id;
+    }
+    return undefined;
+  }
+
+  function remoteState(isStreaming: boolean, hasMessages: boolean, error?: string): RemoteThreadState {
+    if (error) return "error";
+    if (isStreaming) return "running";
+    return hasMessages ? "idle" : "draft";
+  }
+
+  async function remoteSnapshot(threadId: string, options: { live?: boolean } = {}): Promise<RemoteThreadSnapshot> {
+    const ref = await remoteThread(threadId);
+    const configuredModels = configuredRemoteModelOptions();
+    const permission = ref.sessionFile ? resolvePermission(ref.sessionFile, ref.permission) : (ref.permission || "sandbox");
+    let live = options.live && ref.localId ? bridges.get(ref.localId) : undefined;
+    if (options.live && !live) {
+      try {
+        live = await ensureRemoteBridge(ref);
+      } catch {
+        live = undefined;
+      }
+    }
+    if (!ref.sessionFile && !live) {
+      return {
+        id: threadId,
+        projectId: ref.projectId,
+        title: ref.name || "New thread",
+        preview: "",
+        updatedAt: Date.now(),
+        messageCount: 0,
+        state: "draft",
+        permission,
+        cwdName: basename(ref.cwd) || ref.cwd,
+        model: null,
+        availableModels: configuredModels,
+        skills: [],
+        thinkingLevel: "off",
+        messages: [],
+        nextSeq: 0,
+      };
+    }
+    if (live) {
+      const gathered: any = await gatherThread(live.bridge, live.getId(), live.permission);
+      const messages = remoteMessages(gathered.messages, ref.cwd);
+      return {
+        id: threadId,
+        projectId: ref.projectId,
+        title: gathered.sessionName || messages.find((message) => message.role === "user")?.text?.slice(0, 80) || "Thread",
+        preview: messages.find((message) => message.role === "user")?.text?.slice(0, 160) || "",
+        updatedAt: Date.now(),
+        messageCount: messages.filter((message) => message.role === "user" || message.role === "assistant").length,
+        state: remoteState(!!gathered.isStreaming, messages.length > 0),
+        permission: live.permission,
+        cwdName: basename(ref.cwd) || ref.cwd,
+        model: gathered.model || null,
+        availableModels: remoteModelOptions([...modelArray(gathered.models), ...configuredModels]),
+        skills: remoteSkills(gathered.commands, ref.cwd),
+        thinkingLevel: gathered.thinkingLevel || "off",
+        messages,
+        nextSeq: 0,
+      };
+    }
+    if (!ref.sessionFile) throw new RemoteProtocolError("NOT_FOUND", "Thread history is not available");
+    const history = await readThreadHistory(ref.sessionFile);
+    const messages = remoteMessages(history.messages, ref.cwd);
+    return {
+      id: threadId,
+      projectId: ref.projectId,
+      title: history.sessionName || messages.find((message) => message.role === "user")?.text?.slice(0, 80) || "Thread",
+      preview: messages.find((message) => message.role === "user")?.text?.slice(0, 160) || "",
+      updatedAt: Date.now(),
+      messageCount: messages.filter((message) => message.role === "user" || message.role === "assistant").length,
+      state: remoteState(false, messages.length > 0),
+      permission,
+      cwdName: basename(ref.cwd) || ref.cwd,
+      model: history.model,
+      availableModels: configuredModels,
+      skills: [],
+      thinkingLevel: history.thinkingLevel || "off",
+      messages,
+      nextSeq: 0,
+    };
+  }
+
+  function assertRemotePath(cwd: string, relativePath: string): string {
+    if (!relativePath || relativePath.startsWith("/") || relativePath.startsWith("\\") || relativePath.split(/[\\/]/).includes("..")) {
+      throw new RemoteProtocolError("FORBIDDEN", "Only project-relative paths are allowed");
+    }
+    const root = realpathSync(resolve(cwd));
+    const target = resolve(root, relativePath);
+    let existingParent = target;
+    while (!existsSync(existingParent) && existingParent !== root) existingParent = dirname(existingParent);
+    const realParent = realpathSync(existingParent);
+    if (realParent !== root && !realParent.startsWith(root + sep)) throw new RemoteProtocolError("FORBIDDEN", "Path escapes project root");
+    const realTarget = existsSync(target) ? realpathSync(target) : target;
+    if (realTarget !== root && !realTarget.startsWith(root + sep)) throw new RemoteProtocolError("FORBIDDEN", "Path escapes project root");
+    return target;
+  }
+
+  function assertRemotePreviewName(relativePath: string): void {
+    const lower = relativePath.toLowerCase();
+    if (/(^|[\\/])(?:\.env|credentials|secrets?|id_rsa|id_ed25519)(?:\.|$)/i.test(lower)) {
+      throw new RemoteProtocolError("FORBIDDEN", "Sensitive files are not available remotely");
+    }
+  }
+
+  async function ensureRemoteBridge(ref: { id: string; cwd: string; sessionFile?: string; name?: string; permission?: PermissionLevel; localId?: string }): Promise<BridgeHandle> {
+    const permission = ref.sessionFile ? resolvePermission(ref.sessionFile, ref.permission) : (ref.permission || "sandbox");
+    const existingId = ref.localId || ref.sessionFile;
+    if (existingId && bridges.has(existingId)) {
+      const existing = bridges.get(existingId)!;
+      if (existing.permission !== permission) {
+        existing.permission = permission;
+        writeGateMode(existing.gateModeFile, permission);
+      }
+      return existing;
+    }
+    const handle = createHandle(ref.cwd, ref.sessionFile, ref.name, permission, send);
+    const localId = handle.getId();
+    bridges.set(localId, handle);
+    remoteLocalToId.set(localId, ref.id);
+    if (ref.sessionFile) remoteLocalToId.set(ref.sessionFile, ref.id);
+    try {
+      await handle.bridge.start();
+    } catch (error) {
+      if (bridges.get(localId) === handle) bridges.delete(localId);
+      remoteLocalToId.delete(localId);
+      if (ref.sessionFile) remoteLocalToId.delete(ref.sessionFile);
+      removeGateModeFile(handle.gateModeFile);
+      handle.bridge.stop();
+      throw error;
+    }
+    if (ref.sessionFile) {
+      ref.localId = handle.getId();
+    } else {
+      const draft = remoteDrafts.get(ref.id);
+      if (draft) draft.localId = handle.getId();
+    }
+    return handle;
+  }
+
+  const projectService = new ProjectService(
+    async (): Promise<RemoteProject[]> => {
+      const projects = await remoteVisibleProjects();
+      return projects.map((project) => ({
+        id: remoteProjectId(project.cwd),
+        name: project.name,
+        threadCount: project.threads.length,
+        updatedAt: remoteTimestamp(project.threads[0]?.updatedAt),
+      }));
+    },
+    async (projectId: string) => remoteProject(projectId),
+    async (projectId: string) => {
+      const project = await remoteProject(projectId);
+      return Promise.all(project.threads.map(async (thread) => {
+        // Keep the id returned by thread.create stable after its in-memory
+        // draft is promoted to a real session file.
+        let state: RemoteThreadState = thread.messageCount === 0 ? "draft" : "idle";
+        const live = bridges.get(thread.file);
+        if (live) {
+          try {
+            const liveState: any = await live.bridge.getState();
+            if (liveState?.isStreaming) state = "running";
+          } catch {
+            // A thread can finish or close while the list is being read; the
+            // persisted summary remains a valid idle/draft fallback.
+          }
+        }
+        return {
+          id: remoteDraftIdForSessionFile(thread.file) || remoteThreadId(thread.file),
+          projectId,
+          title: thread.title,
+          preview: thread.preview,
+          updatedAt: remoteTimestamp(thread.updatedAt),
+          messageCount: thread.messageCount,
+          state,
+          permission: resolvePermission(thread.file, undefined),
+        };
+      }));
+    },
+  );
+
+  const threadService = new ThreadService(
+    (threadId) => remoteSnapshot(threadId),
+    async (projectId, name, permission = "sandbox") => {
+      const project = await remoteProject(projectId);
+      const id = `draft-${randomUUID()}`;
+      const draft: { cwd: string; projectId: string; name?: string; permission: PermissionLevel; sessionFile?: string; localId?: string } = {
+        cwd: project.cwd,
+        projectId,
+        name,
+        permission,
+      };
+      remoteDrafts.set(id, draft);
+      try {
+        // A remote-created thread must be a real session immediately. The
+        // desktop sidebar is backed by scanProjects(), which only sees Pi's
+        // persisted JSONL sessions; leaving this as an in-memory draft made
+        // the thread invisible until the first prompt was sent.
+        const bridge = await ensureRemoteBridge({ id, ...draft });
+        let state: any = await bridge.bridge.getState();
+        if (!state?.sessionFile) {
+          await bridge.bridge.newSession();
+          state = await bridge.bridge.getState();
+        }
+        if (!state?.sessionFile) throw new Error("Pi did not create a session for the new thread");
+
+        const previousLocalId = bridge.getId();
+        draft.sessionFile = state.sessionFile;
+        draft.localId = state.sessionFile;
+        remoteLocalToId.delete(previousLocalId);
+        remoteLocalToId.set(state.sessionFile, id);
+        bridge.setId(state.sessionFile);
+        const perms = getConfig().threadPermissions;
+        if (perms[state.sessionFile] !== permission) {
+          updateConfig({ threadPermissions: { ...perms, [state.sessionFile]: permission } });
+        }
+        invalidateRemoteProjects();
+        // The renderer's project index is disk-backed too. Notify it as soon
+        // as the session file exists so an already-open sidebar updates.
+        send("pi:projects-changed", { cwd: project.cwd, sessionFile: state.sessionFile });
+        return remoteSnapshot(id, { live: true });
+      } catch (error) {
+        remoteDrafts.delete(id);
+        const localId = draft.localId;
+        const handle = localId ? bridges.get(localId) : undefined;
+        if (localId && handle) {
+          bridges.delete(localId);
+          remoteLocalToId.delete(localId);
+          removeGateModeFile(handle.gateModeFile);
+          handle.bridge.stop();
+        }
+        throw error;
+      }
+    },
+    async (threadId, text, images) => {
+      const ref = await remoteThread(threadId);
+      const bridge = await ensureRemoteBridge(ref);
+      await bridge.bridge.prompt(text, images);
+      const state: any = await bridge.bridge.getState();
+      if (state?.sessionFile) {
+        const draft = remoteDrafts.get(threadId);
+        if (draft) {
+          draft.sessionFile = state.sessionFile;
+          draft.localId = state.sessionFile;
+        }
+        remoteLocalToId.set(state.sessionFile, threadId);
+        bridge.setId(state.sessionFile);
+        const perms = getConfig().threadPermissions;
+        if (perms[state.sessionFile] !== bridge.permission) {
+          updateConfig({ threadPermissions: { ...perms, [state.sessionFile]: bridge.permission } });
+        }
+        if (!ref.sessionFile) send("pi:projects-changed", { cwd: ref.cwd, sessionFile: state.sessionFile });
+      }
+      invalidateRemoteProjects();
+      return { ok: true };
+    },
+    async (threadId, text, images) => {
+      const bridge = await ensureRemoteBridge(await remoteThread(threadId));
+      await bridge.bridge.steer(text, images);
+      return { ok: true };
+    },
+    async (threadId, text, images) => {
+      const bridge = await ensureRemoteBridge(await remoteThread(threadId));
+      await bridge.bridge.followUp(text, images);
+      return { ok: true };
+    },
+    async (threadId) => {
+      const ref = await remoteThread(threadId);
+      const bridge = [ref.localId, ref.sessionFile]
+        .filter((id): id is string => Boolean(id))
+        .map((id) => bridges.get(id))
+        .find(Boolean);
+      if (!bridge) return { ok: true, alreadyStopped: true };
+      await bridge.bridge.abort();
+      return { ok: true };
+    },
+  );
+
+  const filePreviewService = new FilePreviewService(
+    async (projectId, relativePath) => {
+      const project = await remoteProject(projectId);
+      const target = relativePath ? assertRemotePath(project.cwd, relativePath) : project.cwd;
+      const rel = relativePath || undefined;
+      return listDir(project.cwd, rel)
+        .filter((node) => !/(^|[\\/])(?:\.env|credentials|secrets?|id_rsa|id_ed25519)(?:\.|$)/i.test(node.rel))
+        .map((node) => ({ name: node.name, rel: node.rel, isDir: node.isDir, ext: node.ext, size: node.size }));
+    },
+    async (projectId, relativePath) => {
+      const project = await remoteProject(projectId);
+      assertRemotePreviewName(relativePath);
+      const target = assertRemotePath(project.cwd, relativePath);
+      const preview = readPreview(target);
+      if (!["text", "markdown", "html", "image"].includes(preview.kind)) throw new RemoteProtocolError("UNSUPPORTED", "Only text, Markdown, HTML and image previews are available remotely");
+      if (preview.text && preview.text.length > 524_288) preview.text = preview.text.slice(0, 524_288);
+      if (preview.base64 && preview.base64.length > 2_800_000) throw new RemoteProtocolError("PAYLOAD_TOO_LARGE", "Preview is too large");
+      if (preview.message) preview.message = remoteSafeString(preview.message);
+      delete preview.previewUrl;
+      return preview;
+    },
+  );
+
+  const remoteBackend: RemoteBackend = {
+    listProjects: () => projectService.list(),
+    listThreads: (projectId) => projectService.listThreads(projectId),
+    getThread: (threadId, options) => remoteSnapshot(threadId, options),
+    createThread: (projectId, name, permission) => threadService.create(projectId, name, permission),
+    setPermission: async (threadId, permission) => {
+      const ref = await remoteThread(threadId);
+      const draft = remoteDrafts.get(threadId);
+      if (draft) draft.permission = permission;
+      if (ref.sessionFile) {
+        const perms = getConfig().threadPermissions;
+        updateConfig({ threadPermissions: { ...perms, [ref.sessionFile]: permission } });
+      }
+      const existingId = ref.localId || ref.sessionFile;
+      const handle = existingId ? bridges.get(existingId) : undefined;
+      if (handle) {
+        handle.permission = permission;
+        writeGateMode(handle.gateModeFile, permission);
+      }
+      return remoteSnapshot(threadId, { live: true });
+    },
+    setModel: async (threadId, provider, modelId) => {
+      const ref = await remoteThread(threadId);
+      const handle = await ensureRemoteBridge(ref);
+      let available: any = await handle.bridge.getAvailableModels();
+      let models = remoteModelOptions([...modelArray(available), ...configuredRemoteModelOptions()]);
+      if (!models.some((model) => model.provider === provider && model.id === modelId)) {
+        try {
+          available = await handle.bridge.refreshModels();
+          models = remoteModelOptions([...modelArray(available), ...configuredRemoteModelOptions()]);
+        } catch {
+          // The configured models fallback remains usable when the host's
+          // optional refresh command is unavailable on an older Pi runtime.
+        }
+      }
+      const allowed = models.some((model) => model.provider === provider && model.id === modelId);
+      if (!allowed) throw new RemoteProtocolError("MODEL_UNAVAILABLE", "That model is not available on the Pi Studio host");
+      await handle.bridge.setModel(provider, modelId);
+      return remoteSnapshot(threadId, { live: true });
+    },
+    prompt: (threadId, text, images) => threadService.prompt(threadId, text, images),
+    steer: (threadId, text, images) => threadService.steer(threadId, text, images),
+    followUp: (threadId, text, images) => threadService.followUp(threadId, text, images),
+    abort: (threadId) => threadService.abort(threadId),
+    fileTree: (projectId, relativePath) => filePreviewService.tree(projectId, relativePath),
+    filePreview: (projectId, relativePath) => filePreviewService.preview(projectId, relativePath),
+    respondUi: async (threadId, requestId, payload) => {
+      const pending = remoteUiRequests.get(requestId);
+      if (!pending || pending.threadId !== threadId) throw new RemoteProtocolError("NOT_FOUND", "UI request is no longer pending");
+      const bridge = bridges.get(pending.localId);
+      if (!bridge) throw new RemoteProtocolError("DISCONNECTED", "Thread is no longer connected");
+      bridge.bridge.respondExtUi(requestId, payload);
+      remoteUiRequests.delete(requestId);
+      return { ok: true };
+    },
+    subscribeThread: (threadId, listener) => {
+      return remoteEventHub.subscribe(threadId, listener);
+    },
+  };
+
+  const remoteService = new RemoteService(remoteBackend);
+  const remoteHost = new RemoteHost({
+    userDataDir: getConfigDir(),
+    signalingUrl: process.env.PI_STUDIO_REMOTE_SIGNALING_URL || getConfig().remoteSignalingUrl || DEFAULT_REMOTE_SIGNALING_URL,
+    stunUrls: [...BUILT_IN_REMOTE_STUN_URLS],
+    sendToRenderer: send,
+    service: remoteService,
+  });
+  activeRemoteHost = remoteHost;
+  remoteHost.start();
+
+  remotePublish = (channel, payload) => {
+    if (!payload || typeof payload !== "object") return;
+    const rawThreadId = typeof (payload as any).threadId === "string" ? (payload as any).threadId : "";
+    const threadId = remoteLocalToId.get(rawThreadId) || (rawThreadId.includes("\\") || rawThreadId.includes("/") ? remoteThreadId(rawThreadId) : "");
+    if (!threadId) return;
+    let event: RemoteThreadEventPayload;
+    if (channel === "pi:event") {
+      const piEvent = (payload as any).event || {};
+      event = { kind: String(piEvent.type || "agent.event"), data: { event: remoteSafeEventValue(piEvent) as Record<string, unknown> } };
+    } else if (channel === "pi:extui") {
+      const request = (payload as any).request || {};
+      const safeRequest = remoteUiRequest(request);
+      if (!safeRequest) return;
+      remoteUiRequests.set(String(request.id || ""), { threadId, localId: rawThreadId });
+      event = { kind: "ui.request", data: { request: safeRequest } };
+    } else if (channel === "pi:exit") {
+      event = { kind: "thread.exit", data: { code: (payload as any).code, stderr: remoteSafeString(String((payload as any).stderr || "").slice(-2000)) } };
+    } else if (channel === "pi:error") {
+      event = { kind: "thread.error", data: { message: remoteSafeString(String((payload as any).message || "remote Pi error")) } };
+    } else {
+      return;
+    }
+    remoteEventHub.publish(threadId, event);
+  };
+
+  ipcMain.handle("remote:getStatus", () => remoteHost.getStatus());
+  ipcMain.handle("remote:createPairing", () => remoteHost.createPairingTicket());
+  ipcMain.handle("remote:enableSignaling", (_e, args?: { manual?: boolean }) => remoteHost.enableSignaling(args?.manual === true));
+  ipcMain.handle("remote:disableSignaling", () => {
+    remoteHost.disableSignaling();
+    return { ok: true };
+  });
+  ipcMain.handle("remote:approvePairing", (_e, connectionId: string) => remoteHost.approvePairing(connectionId));
+  ipcMain.handle("remote:rejectPairing", (_e, connectionId: string) => remoteHost.rejectPairing(connectionId));
+  ipcMain.handle("remote:revokeDevice", (_e, deviceId: string) => remoteHost.revokeDevice(deviceId));
+  ipcMain.handle("remote:transportOpen", (_e, args: { connectionId: string; sessionId?: string }) => remoteHost.transportOpened(args.connectionId, args.sessionId));
+  ipcMain.handle("remote:transportClose", (_e, args: { connectionId: string; reason?: string }) => remoteHost.transportClosed(args.connectionId, args.reason));
+  ipcMain.handle("remote:transportStatus", (_e, args: { connectionId: string; state?: string; candidateType?: string; localCandidateType?: string; remoteCandidateType?: string }) => {
+    remoteHost.transportStatus(args.connectionId, args);
+    return { ok: true };
+  });
+  ipcMain.handle("remote:transportFrame", (_e, args: { connectionId: string; frame: string }) => remoteHost.handleTransportFrame(args.connectionId, args.frame));
+  ipcMain.handle("remote:sendSignal", (_e, args: { connectionId: string; payload: Record<string, unknown> }) => remoteHost.sendSignal(args.connectionId, args.payload));
+  ipcMain.handle("remote:getTransportConfig", () => ({ stunUrls: [...BUILT_IN_REMOTE_STUN_URLS], directOnly: true }));
+  ipcMain.handle("remote:setConfig", (_e, patch: { signalingUrl?: string }) => {
+    const signalingUrl = patch.signalingUrl?.trim() || DEFAULT_REMOTE_SIGNALING_URL;
+    const next = updateConfig({ remoteSignalingUrl: signalingUrl });
+    remoteHost.configure(next.remoteSignalingUrl || DEFAULT_REMOTE_SIGNALING_URL, [...BUILT_IN_REMOTE_STUN_URLS]);
+    remoteHost.enableSignaling();
+    return { remoteSignalingUrl: next.remoteSignalingUrl };
+  });
+
 
   // ---- app / config -------------------------------------------------------
   ipcMain.handle("app:getVersion", () => app.getVersion());
@@ -330,6 +1323,9 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   ipcMain.handle("app:setConfig", (_e, patch) => {
     const prev = getConfig().piCliPath;
     const next = updateConfig(patch || {});
+    if (patch && ("remoteSignalingUrl" in patch || "remoteStunUrls" in patch)) {
+      remoteHost.configure(next.remoteSignalingUrl || DEFAULT_REMOTE_SIGNALING_URL, [...BUILT_IN_REMOTE_STUN_URLS]);
+    }
     if ((next.piCliPath || "") !== (prev || "")) {
       resetPiRuntime();
       dropWarmBridge(); // standby was booted from the old runtime
@@ -353,24 +1349,71 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   // ---- projects / sessions ------------------------------------------------
   ipcMain.handle("app:getProjects", async (): Promise<ProjectSummary[]> => {
     const scanned = await scanProjects();
-    const pinned = getConfig().pinnedProjects || [];
-    const archived = new Set((getConfig().archivedProjects || []).map((cwd) => cwd.toLowerCase()));
-    const archivedThreads = new Set((getConfig().archivedThreads || []).map((thread) => thread.file.toLowerCase()));
+    const cfg = getConfig();
+    const pinned = cfg.pinnedProjects || [];
+    const pinnedThreads = cfg.pinnedThreads || [];
+    const pinnedProjectSet = new Set(pinned.map((cwd) => cwd.toLowerCase()));
+    const pinnedThreadSet = new Set(pinnedThreads.map((file) => file.toLowerCase()));
+    const pinnedThreadRank = new Map(pinnedThreads.map((file, index) => [file.toLowerCase(), index]));
+    const archived = new Set((cfg.archivedProjects || []).map((cwd) => cwd.toLowerCase()));
+    const archivedThreads = new Set((cfg.archivedThreads || []).map((thread) => thread.file.toLowerCase()));
     const visibleScanned = scanned
       .filter((project) => !archived.has(project.cwd.toLowerCase()))
-      .map((project) => ({
-        ...project,
-        threads: project.threads.filter((thread) => !archivedThreads.has(thread.file.toLowerCase())),
-      }));
+      .map((project) => {
+        const threads = project.threads
+          .filter((thread) => !archivedThreads.has(thread.file.toLowerCase()))
+          .map((thread) => ({
+            ...thread,
+            pinned: pinnedThreadSet.has(thread.file.toLowerCase()),
+          }))
+          .sort((a, b) => {
+            const aPinned = a.pinned ? 0 : 1;
+            const bPinned = b.pinned ? 0 : 1;
+            if (aPinned !== bPinned) return aPinned - bPinned;
+            if (a.pinned && b.pinned) {
+              return (
+                (pinnedThreadRank.get(a.file.toLowerCase()) ?? Number.MAX_SAFE_INTEGER) -
+                (pinnedThreadRank.get(b.file.toLowerCase()) ?? Number.MAX_SAFE_INTEGER)
+              );
+            }
+            return b.updatedAt - a.updatedAt;
+          });
+        return {
+          ...project,
+          pinned: pinnedProjectSet.has(project.cwd.toLowerCase()),
+          openedAt: openedProjects.get(project.cwd.toLowerCase())?.openedAt,
+          threads,
+        };
+      });
+    const visibleOpened = Array.from(openedProjects.values())
+      .filter((project) => !archived.has(project.cwd.toLowerCase()))
+      .filter((project) => !visibleScanned.some((scannedProject) => sameDir(scannedProject.cwd, project.cwd)))
+      .filter((project) => !pinnedProjectSet.has(project.cwd.toLowerCase()))
+      .map((project) => ({ ...project, pinned: false, threads: [] }));
     const visiblePinned = pinned.filter((cwd) => !archived.has(cwd.toLowerCase()));
-    const byCwd = new Map(visibleScanned.map((p) => [p.cwd, p]));
+    const byCwd = new Map(visibleScanned.map((p) => [p.cwd.toLowerCase(), p]));
     const result: ProjectSummary[] = [];
     for (const cwd of visiblePinned) {
-      const existing = byCwd.get(cwd);
+      const existing = byCwd.get(cwd.toLowerCase());
       if (existing) result.push(existing);
-      else result.push({ cwd, name: cwd.split(/[\\/]/).filter(Boolean).pop() || cwd, threads: [] });
+      else result.push({ cwd, name: cwd.split(/[\\/]/).filter(Boolean).pop() || cwd, threads: [], pinned: true });
     }
-    for (const p of visibleScanned) if (!visiblePinned.includes(p.cwd)) result.push(p);
+    const unpinned = [
+      ...visibleScanned.filter((project) => !pinnedProjectSet.has(project.cwd.toLowerCase())),
+      ...visibleOpened,
+    ];
+    const openedRank = new Map(openedProjectOrder.map((cwd, index) => [cwd, index]));
+    unpinned.sort((a, b) => {
+      const aRank = openedRank.get(a.cwd.toLowerCase());
+      const bRank = openedRank.get(b.cwd.toLowerCase());
+      if (aRank !== undefined || bRank !== undefined) {
+        if (aRank === undefined) return 1;
+        if (bRank === undefined) return -1;
+        return aRank - bRank;
+      }
+      return 0;
+    });
+    result.push(...unpinned);
     return result;
   });
 
@@ -388,16 +1431,39 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     if (!absPath || !existsSync(absPath) || !statSync(absPath).isDirectory()) {
       throw new Error("Not a directory: " + absPath);
     }
-    const cfg = getConfig();
-    const pinned = cfg.pinnedProjects || [];
-    if (!pinned.includes(absPath)) updateConfig({ pinnedProjects: [absPath, ...pinned] });
-    return { cwd: absPath, name: absPath.split(/[\\/]/).filter(Boolean).pop() || absPath };
+    const name = absPath.split(/[\\/]/).filter(Boolean).pop() || absPath;
+    const key = absPath.toLowerCase();
+    lastOpenCwd = absPath;
+    openedProjects.set(key, { cwd: absPath, name, threads: [], pinned: false, openedAt: Date.now() });
+    openedProjectOrder = [key, ...openedProjectOrder.filter((cwd) => cwd !== key)];
+    return { cwd: absPath, name };
   });
 
   ipcMain.handle("app:unpinProject", (_e, absPath: string) => {
     const cfg = getConfig();
-    updateConfig({ pinnedProjects: (cfg.pinnedProjects || []).filter((p) => p !== absPath) });
+    const target = typeof absPath === "string" ? absPath.toLowerCase() : "";
+    updateConfig({ pinnedProjects: (cfg.pinnedProjects || []).filter((p) => p.toLowerCase() !== target) });
     return true;
+  });
+
+  ipcMain.handle("app:setProjectPinned", (_e, args: { cwd?: string; pinned?: boolean }) => {
+    const cwd = typeof args?.cwd === "string" ? args.cwd.trim() : "";
+    if (!cwd) throw new Error("Project path is required");
+    const cfg = getConfig();
+    const target = cwd.toLowerCase();
+    const next = (cfg.pinnedProjects || []).filter((path) => path.toLowerCase() !== target);
+    if (args?.pinned) next.unshift(cwd);
+    return updateConfig({ pinnedProjects: next });
+  });
+
+  ipcMain.handle("app:setThreadPinned", (_e, args: { file?: string; pinned?: boolean }) => {
+    const file = typeof args?.file === "string" ? args.file.trim() : "";
+    if (!file) throw new Error("Thread file is required");
+    const cfg = getConfig();
+    const target = file.toLowerCase();
+    const next = (cfg.pinnedThreads || []).filter((path) => path.toLowerCase() !== target);
+    if (args?.pinned) next.unshift(file);
+    return updateConfig({ pinnedThreads: next });
   });
 
   // Pre-warm the standby pi process for the project the user is looking at, so
@@ -580,8 +1646,14 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     bridges.set(handle.getId(), handle);
     try {
       await handle.bridge.start(); // no-op for the already-running spare
-      if (adopted && sessionFile) {
-        await handle.bridge.switchSession(sessionFile);
+      if (adopted) {
+        if (sessionFile) {
+          await handle.bridge.switchSession(sessionFile);
+        } else {
+          // A warm spare may have opened pi's current session while it was
+          // idle. A new task must never inherit that session or its name.
+          await handle.bridge.newSession();
+        }
       }
       const state: any = await handle.bridge.getState();
       const finalId = state.sessionFile || handle.getId();
@@ -591,7 +1663,22 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
         const perms = getConfig().threadPermissions;
         if (perms[state.sessionFile] !== permission) updateConfig({ threadPermissions: { ...perms, [state.sessionFile]: permission } });
       }
-      return gatherThread(handle.bridge, finalId, permission);
+      const gathered = await gatherThread(handle.bridge, finalId, permission);
+      if (!sessionFile) {
+        // Opening without a session file is the explicit "New thread" flow.
+        // The process may have been a warm spare whose previous session name
+        // is still visible in its state; never let that metadata or transcript
+        // cross the new-thread boundary.
+        return {
+          ...gathered,
+          sessionName: null,
+          messages: [],
+          branchMessages: [],
+          isStreaming: false,
+          isNewSession: true,
+        };
+      }
+      return gathered;
     } catch (e) {
       bridges.delete(handle.getId());
       removeGateModeFile(handle.gateModeFile);
@@ -827,6 +1914,19 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
       ensureWarmBridge();
     }
     return { ok: res.code === 0, code: res.code, output: (res.stdout + res.stderr).trim() };
+  });
+  ipcMain.handle("skillsHub:leaderboard", () => getSkillsHubLeaderboard());
+  ipcMain.handle("skillsHub:search", (_e, query: string) => searchSkillsHub(typeof query === "string" ? query : ""));
+  ipcMain.handle("skillsHub:detail", (_e, skill: Parameters<typeof getSkillDetails>[0]) => getSkillDetails(skill));
+  ipcMain.handle("skillsHub:install", async (_e, args: { source: string; skillId: string }) => {
+    const result = await installSkillFromHub(args.source, args.skillId);
+    if (result.ok) {
+      // The official CLI writes to ~/.pi/agent/skills. Recreate the warm
+      // bridge so a newly opened task can discover the skill immediately.
+      dropWarmBridge();
+      ensureWarmBridge();
+    }
+    return result;
   });
 
   // ---- automation (scheduled tasks) --------------------------------------

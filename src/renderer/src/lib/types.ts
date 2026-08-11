@@ -8,12 +8,16 @@ export interface ThreadSummary {
   preview: string;
   updatedAt: number;
   messageCount: number;
+  pinned?: boolean;
 }
 
 export interface ProjectSummary {
   cwd: string;
   name: string;
   threads: ThreadSummary[];
+  pinned?: boolean;
+  /** Set only for projects opened during the current desktop session. */
+  openedAt?: number;
 }
 
 export interface ArchivedThread {
@@ -55,6 +59,27 @@ export interface SkillInfo {
   /** The root directory it was discovered under. */
   root: string;
   enabled: boolean;
+}
+
+/** A public skill returned by the skills.sh directory. */
+export interface SkillHubSkill {
+  /** Stable directory id, e.g. `vercel-labs/skills/find-skills`. */
+  id: string;
+  skillId: string;
+  name: string;
+  /** Repository or well-known source understood by the skills CLI. */
+  source: string;
+  installs: number;
+  url: string;
+}
+
+/** Detail payload for one public skill. */
+export interface SkillHubDetail extends SkillHubSkill {
+  description: string;
+  files: { path: string; contents?: string }[];
+  hash: string | null;
+  installCommand: string;
+  markdown?: string;
 }
 
 export type ScheduleFrequency = "hourly" | "daily" | "weekly";
@@ -131,6 +156,8 @@ export interface ToolRun {
   resultText?: string;
   partialText?: string;
   argsStr?: string;
+  startedAt?: number;
+  endedAt?: number;
 }
 
 /** A follow-up the user queued (Enter) while the agent is streaming. Held in
@@ -145,6 +172,10 @@ export interface ThreadState {
   cwd: string;
   sessionFile: string | null;
   sessionName: string | null;
+  /** True while this view represents a fresh unnamed session. */
+  isNewSession?: boolean;
+  /** True while the new-session RPC is replacing the previous conversation. */
+  creatingSession?: boolean;
   model: ModelInfo | null;
   models: ModelInfo[];
   thinking: string;
@@ -206,11 +237,14 @@ export interface Toast {
 export interface AppConfig {
   piCliPath: string;
   pinnedProjects: string[];
+  pinnedThreads: string[];
   archivedProjects: string[];
   archivedThreads: ArchivedThread[];
   windowBounds?: { x?: number; y?: number; width: number; height: number; maximized?: boolean };
   theme: "dark" | "light" | "system";
   language: "en" | "zh";
+  remoteSignalingUrl: string;
+  remoteStunUrls: string[];
 }
 
 export interface AppRuntime {

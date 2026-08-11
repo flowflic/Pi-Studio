@@ -2,6 +2,7 @@ import { memo, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
+import { CODE_LANGUAGE_ALIASES, CODE_LANGUAGE_NAMES, CODE_LANGUAGES } from "./code-languages";
 
 function extractText(node: ReactNode): string {
   if (node == null || typeof node === "boolean") return "";
@@ -45,7 +46,19 @@ function CodeBlock({ className, children }: { className?: string; children: Reac
 // every render — so everything here must be stable, and the component itself
 // is memoized on `text`. Unchanged messages then cost nothing to re-render.
 const REMARK_PLUGINS = [remarkGfm];
-const REHYPE_PLUGINS = [rehypeHighlight];
+const REHYPE_PLUGINS = [
+  [
+    rehypeHighlight,
+    {
+      aliases: CODE_LANGUAGE_ALIASES,
+      // Detect unlabeled fenced blocks after checking explicit languages. This
+      // makes copied shell/code snippets useful while keeping the subset small.
+      detect: true,
+      languages: CODE_LANGUAGES,
+      subset: CODE_LANGUAGE_NAMES,
+    },
+  ],
+] as any;
 const MD_COMPONENTS = {
   pre: ({ children }: any) => <>{children}</>,
   code: ({ className, children, ...rest }: any) => {

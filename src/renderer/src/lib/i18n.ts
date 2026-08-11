@@ -35,9 +35,16 @@ const exact: Record<string, string> = {
   "归档项目": "Archive project",
   "归档项目失败：": "Failed to archive project: ",
   "恢复项目": "Restore project",
+  "线程已归档，可在设置的“归档线程”中恢复。": "Thread archived. Restore it from Archived threads in Settings.",
+  "线程已恢复到侧栏。": "Thread restored to the sidebar.",
   "已归档项目": "Archived projects",
+  "已归档线程": "Archived threads",
   "暂无归档项目。": "No archived projects.",
+  "暂无归档线程。": "No archived threads.",
   "归档只会从侧栏、搜索和新建任务的项目列表中隐藏文件夹，不会删除文件夹或其中的线程。": "Archiving only hides the folder from the sidebar, search, and new-task project list. It does not delete the folder or its threads.",
+  "归档只会隐藏线程，不会删除会话文件；恢复后线程会重新出现在所属项目下。": "Archiving only hides the thread; it does not delete the session file. Restored threads reappear under their project.",
+  "归档线程": "Archive thread",
+  "恢复线程": "Restore thread",
   "Commands, plugins & skills": "Commands, plugins & skills",
   "项目已归档，可在设置的“归档项目”中恢复。": "Project archived. Restore it from Archived projects in Settings.",
   "项目已恢复到侧栏。": "Project restored to the sidebar.",
@@ -97,6 +104,11 @@ const exact: Record<string, string> = {
   "新会话": "New session",
   "切换预览": "Toggle preview",
   "刷新预览": "Refresh preview",
+  "文件产物": "File outputs",
+  "原内容": "Original content",
+  "新内容": "New content",
+  "写入内容": "Written content",
+  "写入": "Write",
   "无法创建 HTML 预览地址。": "Could not create the HTML preview URL.",
   "思考中": "Thinking",
   "待处理 follow-up": "Pending follow-up",
@@ -107,6 +119,7 @@ const exact: Record<string, string> = {
   "pi 默认，不拦截任何操作": "Pi default; no operations are intercepted",
   "命令": "Commands",
   "无可用命令": "No commands available",
+  "搜索命令、插件或 skill": "Search commands, plugins, or skills",
   "模型与思考等级": "Model and effort",
   "无可用模型（检查 auth）": "No models available (check auth)",
   "思考等级": "Effort",
@@ -174,6 +187,10 @@ const exact: Record<string, string> = {
   "本地": "Local",
   "管理 pi 的 extension 包与 skill": "Manage Pi extension packages and skills",
   "开关写入 ~/.pi/agent/settings.json，与终端 pi 共享；更改在下次启动 pi 会话时生效。": "Changes are written to ~/.pi/agent/settings.json and shared with terminal Pi. They apply to the next Pi session.",
+  "开关写入 ~/.pi/agent/settings.json，与终端 pi 共享；自动扫描 ~/.pi/agent/skills、~/.pi/agent/skill 和当前项目的 .pi skill 目录。": "Changes are written to ~/.pi/agent/settings.json and shared with terminal Pi. Pi scans ~/.pi/agent/skills, ~/.pi/agent/skill, and the current project's .pi skill folders.",
+  "搜索插件或 skill": "Search plugins or skills",
+  "清除搜索": "Clear search",
+  "刷新插件和 skill": "Refresh plugins and skills",
   "更新全部": "Update all",
   "检查并更新所有扩展（pi update --extensions）": "Check and update all extensions (pi update --extensions)",
   "安装来源，如 npm:@foo/bar 或 git:github.com/user/repo 或本地路径": "Package source, such as npm:@foo/bar, git:github.com/user/repo, or a local path",
@@ -244,6 +261,8 @@ const exact: Record<string, string> = {
   "已从所选 Agent 回复创建 Fork。": "Created a fork from the selected Agent reply.",
   "请等待当前回复结束后再 Clone。": "Wait for the current reply to finish before cloning.",
   "已 Clone 截至所选 Agent 回复的分支。": "Cloned the branch through the selected Agent reply.",
+  "模型配置已保存，新模型现在可在对话框中选择。": "Model configuration saved. The new model is now available in the chat.",
+  "收回侧边栏预览": "Restore side preview",
   "切换失败": "Change failed",
   "该扩展已是最新版本。": "This extension is already up to date.",
   "所有扩展已是最新版本。": "All extensions are already up to date.",
@@ -275,7 +294,12 @@ const exact: Record<string, string> = {
 
 const prefixes: Array<[string, string]> = [
   ["未检测到 pi：", "Pi was not detected: "],
+  ["归档项目失败：", "Failed to archive project: "],
   ["恢复项目失败：", "Failed to restore project: "],
+  ["恢复线程失败：", "Failed to restore thread: "],
+  ["归档线程失败：", "Failed to archive thread: "],
+  ["归档线程：", "Archive thread: "],
+  ["在文件管理器中打开：", "Open in File Explorer: "],
   ["连接 pi 进程失败：", "Failed to connect to Pi: "],
   ["加载插件失败：", "Failed to load plugins: "],
   ["安装失败：", "Installation failed: "],
@@ -292,6 +316,8 @@ const prefixes: Array<[string, string]> = [
   ["保存失败：", "Save failed: "],
   ["打开失败：", "Open failed: "],
   ["检查失败：", "Check failed: "],
+  ["自动化任务完成：", "Automation task completed: "],
+  ["自动化任务失败：", "Automation task failed: "],
 ];
 
 function translateValue(value: string): string {
@@ -312,10 +338,12 @@ function translateValue(value: string): string {
     .replace(/(\d+)\s*条\s*·/g, "$1 messages ·")
     .replace(/(\d+)\s*条/g, "$1 messages")
     .replace(/(\d+)\s*个会话/g, "$1 sessions")
+    .replace(/(\d+)\s*个附件/g, "$1 attachments")
     .replace(/(\d+)\s*模型/g, "$1 models")
     .replace(/^每小时 第\s*(\d+)\s*分钟$/, "Hourly at minute $1")
     .replace(/^每天\s+/, "Daily at ")
     .replace(/^每周\s+/, "Weekly on ")
+    .replace(/^更新到\s+v(.+)$/, "Update to v$1")
     .replace(/合计\s*\$/g, "Total $");
 }
 

@@ -1,0 +1,29 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "pi-studio-signaling",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "pi-studio-remote.scholarcn.com",
+      "custom_domain": true
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SIGNALING_HUB",
+        "class_name": "SignalingHub"
+      }
+    ]
+  },
+
+  "exports": {
+    "SignalingHub": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  }
+}

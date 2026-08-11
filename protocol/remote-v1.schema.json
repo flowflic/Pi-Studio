@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-studio.dev/protocol/remote-v1.schema.json",
+  "title": "Pi Studio Remote Protocol v1",
+  "description": "Versioned envelope for the direct WebRTC companion protocol. Model, skill, and file-output metadata is host-provided display data; skill invocation uses a validated slash command.",
+  "x-request-types": [
+    "projects.list",
+    "threads.list",
+    "thread.get",
+    "thread.create",
+    "thread.claimWrite",
+    "thread.setPermission",
+    "thread.setModel",
+    "thread.subscribe",
+    "thread.resync",
+    "thread.prompt",
+    "thread.steer",
+    "thread.followUp",
+    "thread.abort",
+    "file.tree",
+    "file.preview",
+    "ui.respond"
+  ],
+  "type": "object",
+  "required": ["v", "type", "sessionId", "sentAt"],
+  "properties": {
+    "v": { "const": 1 },
+    "type": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "requestId": { "type": "string", "maxLength": 128 },
+    "sessionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "threadId": { "type": "string", "maxLength": 128 },
+    "seq": { "type": "integer", "minimum": 0 },
+    "sentAt": { "type": "integer", "minimum": 0 },
+    "payload": {},
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "remoteModelOption": {
+      "type": "object",
+      "required": ["provider", "id"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "id": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "name": { "type": "string", "maxLength": 180 },
+        "reasoning": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "remoteSkill": {
+      "type": "object",
+      "required": ["name", "command"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$" },
+        "command": { "type": "string", "pattern": "^skill:[A-Za-z0-9][A-Za-z0-9._-]{0,120}$" },
+        "description": { "type": "string", "maxLength": 600 }
+      },
+      "additionalProperties": false
+    },
+    "remoteFileArtifact": {
+      "type": "object",
+      "required": ["name", "path", "ext", "action"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 260 },
+        "path": { "type": "string", "minLength": 1, "maxLength": 1000, "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)(?:\\.\\.?)(?:/|$)).+" },
+        "ext": { "type": "string", "maxLength": 12 },
+        "action": { "enum": ["created", "updated"] }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}

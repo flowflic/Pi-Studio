@@ -25,12 +25,16 @@ export function usePiEvents() {
         else st.pushToast("error", `自动化任务失败：${p.name}${p.error ? " · " + p.error : ""}`);
       }
     });
+    const u6 = window.pi.on.projectsChanged(() => {
+      void useStore.getState().refreshProjects();
+    });
     return () => {
       u1();
       u2();
       u3();
       u4();
       u5();
+      u6();
     };
   }, [handleEvent, handleExtUi, handleExit, handleError]);
 }

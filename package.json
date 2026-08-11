@@ -1,6 +1,6 @@
 {
   "name": "pi-studio",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "piRuntimeVersion": "0.83.0",
   "private": true,
   "license": "MIT",
@@ -22,7 +22,10 @@
     "bundle": "node scripts/bundle-runtime.mjs",
     "finalize-runtime": "node scripts/finalize-runtime.mjs",
     "pack": "npm run bundle && npm run build && electron-builder --dir && npm run finalize-runtime",
-    "dist": "npm run bundle && npm run build && electron-builder && npm run finalize-runtime"
+    "dist": "npm run bundle && npm run build && electron-builder && npm run finalize-runtime",
+    "test:remote": "node scripts/test-remote-protocol.mjs",
+    "test:remote-signaling": "node scripts/test-remote-signaling.mjs",
+    "signaling": "node signaling/server.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -35,6 +38,9 @@
     "react-markdown": "^9.0.1",
     "rehype-highlight": "^7.0.1",
     "remark-gfm": "^4.0.0",
+    "qrcode": "^1.5.4",
+    "skills": "^1.5.22",
+    "ws": "^8.21.2",
     "xlsx": "^0.18.5",
     "zustand": "^4.5.5"
   },
@@ -42,6 +48,8 @@
     "@types/node": "^22.9.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@types/qrcode": "^1.5.6",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.3.3",
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",

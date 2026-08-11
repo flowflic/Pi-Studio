@@ -1,59 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import hljs from "highlight.js/lib/core";
-import bash from "highlight.js/lib/languages/bash";
-import cpp from "highlight.js/lib/languages/cpp";
-import csharp from "highlight.js/lib/languages/csharp";
-import css from "highlight.js/lib/languages/css";
-import dockerfile from "highlight.js/lib/languages/dockerfile";
-import go from "highlight.js/lib/languages/go";
-import ini from "highlight.js/lib/languages/ini";
-import java from "highlight.js/lib/languages/java";
-import javascript from "highlight.js/lib/languages/javascript";
-import json from "highlight.js/lib/languages/json";
-import kotlin from "highlight.js/lib/languages/kotlin";
-import lua from "highlight.js/lib/languages/lua";
-import markdown from "highlight.js/lib/languages/markdown";
-import php from "highlight.js/lib/languages/php";
-import powershell from "highlight.js/lib/languages/powershell";
-import python from "highlight.js/lib/languages/python";
-import ruby from "highlight.js/lib/languages/ruby";
-import rust from "highlight.js/lib/languages/rust";
-import sql from "highlight.js/lib/languages/sql";
-import swift from "highlight.js/lib/languages/swift";
-import typescript from "highlight.js/lib/languages/typescript";
-import xml from "highlight.js/lib/languages/xml";
-import yaml from "highlight.js/lib/languages/yaml";
 import { useStore } from "../store";
 import { Markdown } from "../lib/markdown";
+import { CODE_LANGUAGE_ALIASES, CODE_LANGUAGES } from "../lib/code-languages";
 import { formatBytes } from "../lib/format";
 import { Close, Contract, Copy, Expand, Refresh } from "./icons";
 
-[
-  ["bash", bash],
-  ["cpp", cpp],
-  ["csharp", csharp],
-  ["css", css],
-  ["dockerfile", dockerfile],
-  ["go", go],
-  ["ini", ini],
-  ["java", java],
-  ["javascript", javascript],
-  ["json", json],
-  ["kotlin", kotlin],
-  ["lua", lua],
-  ["markdown", markdown],
-  ["php", php],
-  ["powershell", powershell],
-  ["python", python],
-  ["ruby", ruby],
-  ["rust", rust],
-  ["sql", sql],
-  ["swift", swift],
-  ["typescript", typescript],
-  ["xml", xml],
-  ["yaml", yaml],
-].forEach(([name, grammar]) => hljs.registerLanguage(name as string, grammar as any));
+Object.entries(CODE_LANGUAGES).forEach(([name, grammar]) => hljs.registerLanguage(name, grammar as any));
+Object.entries(CODE_LANGUAGE_ALIASES).forEach(([name, aliases]) => {
+  hljs.registerAliases(aliases, { languageName: name });
+});
 
 const PREVIEW_WIDTH_KEY = "pi-studio.preview-width";
 const PREVIEW_DEFAULT_WIDTH = 420;

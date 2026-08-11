@@ -4,7 +4,7 @@ import { app, BrowserWindow, Menu, shell } from "electron";
 import { loadConfig, getConfig, updateConfig } from "./config";
 import { cleanupOldRuntimes } from "./core-updater";
 import { registerHtmlPreviewProtocol, registerHtmlPreviewScheme } from "./html-preview-protocol";
-import { registerIpc, stopAllBridges } from "./ipc";
+import { registerIpc, stopAllBridges, stopRemoteHost } from "./ipc";
 import { stopAutomations, stopScheduler } from "./automation";
 
 const APP_USER_MODEL_ID = "com.pi-studio.app";
@@ -193,12 +193,14 @@ app.on("before-quit", () => {
   }
   stopScheduler();
   stopAutomations();
+  stopRemoteHost();
   stopAllBridges();
 });
 
 app.on("window-all-closed", () => {
   stopScheduler();
   stopAutomations();
+  stopRemoteHost();
   stopAllBridges();
   if (process.platform !== "darwin") app.quit();
 });

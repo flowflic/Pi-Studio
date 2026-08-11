@@ -240,7 +240,10 @@ export function Composer({ threadId }: { threadId: string }) {
     const query = projectQuery.trim().toLowerCase();
     return !query || project.name.toLowerCase().includes(query) || project.cwd.toLowerCase().includes(query);
   });
-  const slashMatch = text.match(/^\/([^\s]*)$/);
+  // A slash command may be typed after an existing prompt. Only inspect the
+  // final whitespace-delimited token so ordinary text (and paths/URLs) does
+  // not open the menu prematurely.
+  const slashMatch = text.match(/(?:^|\s)\/([^\s]*)$/);
   const slashQuery = (slashMatch?.[1] || "").toLowerCase();
   const slashItems = useMemo(
     () =>
@@ -276,7 +279,8 @@ export function Composer({ threadId }: { threadId: string }) {
   }, [slashQuery]);
 
   const chooseSlashCommand = (command: any) => {
-    setText(`/${command.name} `);
+    // Replace only the current slash token and keep any prompt text before it.
+    setText((current) => current.replace(/\/[^\s]*$/, `/${command.name} `));
     setSlashDismissed(true);
     requestAnimationFrame(() => taRef.current?.focus());
   };

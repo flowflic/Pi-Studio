@@ -1,5 +1,12 @@
 # Dependencies and generated builds
 node_modules/
+android/.gradle/
+android/.idea/
+android/.kotlin/
+android/local.properties
+android/**/build/
+cloudflare-signaling/node_modules/
+cloudflare-signaling/.wrangler/
 out/
 dist/
 release/
