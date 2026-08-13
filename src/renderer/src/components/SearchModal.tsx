@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { useStore } from "../store";
+import { localizeAutomationThreadTitle, useStore } from "../store";
 import type { ThreadSearchHit } from "../lib/types";
 import { Search, Close, Folder } from "./icons";
 
@@ -34,6 +34,7 @@ export function SearchModal() {
   const open = useStore((s) => s.searchOpen);
   const close = useStore((s) => s.closeSearch);
   const goToThread = useStore((s) => s.goToThread);
+  const language = useStore((s) => s.config?.language || "en");
 
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<ThreadSearchHit[]>([]);
@@ -168,29 +169,32 @@ export function SearchModal() {
             </div>
           )}
 
-          {results.map((hit, i) => (
-            <button
-              key={hit.file}
-              data-idx={i}
-              className={`search-item ${i === active ? "active" : ""}`}
-              style={{ animationDelay: `${Math.min(i, 10) * 22}ms` }}
-              onClick={() => go(hit)}
-              onMouseEnter={() => setActive(i)}
-            >
-              <div className="search-item-top">
-                <span className="search-item-title">{highlight(hit.title, q)}</span>
-                <span className="search-item-count">{hit.matchCount} 处匹配</span>
-              </div>
-              <div className="search-item-snippet">{highlight(hit.snippet, q)}</div>
-              <div className="search-item-meta">
-                <span className="search-item-proj">
-                  <Folder size={11} /> {hit.projectName}
-                </span>
-                <span>{hit.messageCount} 条</span>
-                <span>{fmtDate(hit.updatedAt)}</span>
-              </div>
-            </button>
-          ))}
+          {results.map((hit, i) => {
+            const title = localizeAutomationThreadTitle(hit.title, language);
+            return (
+              <button
+                key={hit.file}
+                data-idx={i}
+                className={`search-item ${i === active ? "active" : ""}`}
+                style={{ animationDelay: `${Math.min(i, 10) * 22}ms` }}
+                onClick={() => go(hit)}
+                onMouseEnter={() => setActive(i)}
+              >
+                <div className="search-item-top">
+                  <span className="search-item-title">{highlight(title, q)}</span>
+                  <span className="search-item-count">{hit.matchCount} 处匹配</span>
+                </div>
+                <div className="search-item-snippet">{highlight(hit.snippet, q)}</div>
+                <div className="search-item-meta">
+                  <span className="search-item-proj">
+                    <Folder size={11} /> {hit.projectName}
+                  </span>
+                  <span>{hit.messageCount} 条</span>
+                  <span>{fmtDate(hit.updatedAt)}</span>
+                </div>
+              </button>
+            );
+          })}
         </div>
 
         <div className="search-foot">

@@ -28,7 +28,7 @@ import {
 } from "./models-service";
 import { PiBridge, isAppManagedRuntime, resetPiRuntime, resolvePiRuntime, runtimeKind } from "./pi-bridge";
 import { createGateModeFile, ensureGateExtension, removeGateModeFile, writeGateMode } from "./permission-gate";
-import { readPreview } from "./preview-service";
+import { readPreview, readRemotePreview } from "./preview-service";
 import { getAgentDir, getTotalUsage, type ProjectSummary, readThreadHistory, scanProjects, searchThreads, type ThreadSearchHit } from "./session-store";
 import {
   getAdditionalSkillPaths,
@@ -48,6 +48,12 @@ import { loadOrCreateIdentity, opaqueId } from "./remote/identity";
 import { RemoteHost } from "./remote/host";
 import { FilePreviewService, ProjectService, RemoteEventHub, ThreadService } from "./remote/services";
 import { RemoteService, type RemoteBackend } from "./remote/service";
+import {
+  createSystemNotificationCenter,
+  isSandboxApprovalRequest,
+  sandboxOperationFromTitle,
+  type SystemNotificationCenter,
+} from "./system-notifications";
 import {
   RemoteProtocolError,
   type RemoteFileArtifact,
@@ -81,6 +87,7 @@ interface BridgeHandle {
 }
 
 const bridges = new Map<string, BridgeHandle>();
+let systemNotifications: SystemNotificationCenter | null = null;
 let activeRemoteHost: RemoteHost | null = null;
 
 // Opening a folder makes it available for the current workspace session, but
@@ -140,6 +147,23 @@ function processAttachments(attachments: Attachment[] | undefined, text: string)
   return { text: text + extra, images };
 }
 
+function agentContentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block: any) => (block?.type === "text" ? String(block.text || "") : ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function finalAssistantReply(message: any): { text: string } | null {
+  if (!message || message.role !== "assistant") return null;
+  const stopReason = typeof message.stopReason === "string" ? message.stopReason : "";
+  if (stopReason === "error" || stopReason === "aborted") return null;
+  if (Array.isArray(message.content) && message.content.some((block: any) => block?.type === "toolCall")) return null;
+  return { text: agentContentText(message.content) };
+}
+
 function createHandle(
   cwd: string,
   sessionFile: string | undefined,
@@ -149,6 +173,9 @@ function createHandle(
 ): BridgeHandle {
   let id = sessionFile || `boot:${randomUUID()}`;
   const gateModeFile = createGateModeFile(getConfigDir(), permission);
+  let turnStarted = false;
+  let promptForNotification = name || "";
+  let completedReply: { text: string } | null = null;
   const handle: BridgeHandle = {
     bridge: null as unknown as PiBridge,
     getId: () => id,
@@ -174,8 +201,49 @@ function createHandle(
     // singular `.pi/agent/skill` compatibility path and other local roots.
     skills: getAdditionalSkillPaths(cwd),
     gateModeFile,
-    onEvent: (e) => send("pi:event", { threadId: id, event: e }),
-    onExtUi: (r) => send("pi:extui", { threadId: id, request: r }),
+    onEvent: (e) => {
+      const event: any = e;
+      if (event?.type === "agent_start") {
+        turnStarted = true;
+        completedReply = null;
+      }
+      if (event?.type === "message_start" && event.message?.role === "user") {
+        turnStarted = true;
+        promptForNotification = agentContentText(event.message.content).trim();
+      }
+      if (event?.type === "message_end" && event.message?.role === "assistant") {
+        // Intermediate assistant messages contain tool calls. Only retain the
+        // final user-facing assistant message for the native completion card.
+        completedReply = finalAssistantReply(event.message);
+      }
+
+      send("pi:event", { threadId: id, event });
+
+      if (event?.type === "agent_settled") {
+        const shouldNotify = turnStarted;
+        const reply = completedReply;
+        const prompt = promptForNotification;
+        turnStarted = false;
+        completedReply = null;
+        if (shouldNotify && reply) {
+          systemNotifications?.notifyTaskComplete(id, {
+            language: getConfig().language === "zh" ? "zh" : "en",
+            prompt,
+            reply: reply.text,
+          });
+        }
+      }
+    },
+    onExtUi: (r) => {
+      send("pi:extui", { threadId: id, request: r });
+      if (isSandboxApprovalRequest(r)) {
+        systemNotifications?.notifySandboxApproval(
+          id,
+          getConfig().language === "zh" ? "zh" : "en",
+          sandboxOperationFromTitle((r as any)?.title),
+        );
+      }
+    },
     onExit: (info) => {
       // Only forget the bridge if it is still the one registered under this id
       // (a delayed exit must not evict a bridge that replaced it).
@@ -398,6 +466,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     remotePublish?.(channel, payload);
   };
   sendToRenderer = send;
+  systemNotifications = createSystemNotificationCenter(getWin);
   warmEnabled = true;
   // ---- remote companion backend -----------------------------------------
   // The remote surface is deliberately built beside the existing renderer IPC
@@ -1221,9 +1290,13 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
       const project = await remoteProject(projectId);
       assertRemotePreviewName(relativePath);
       const target = assertRemotePath(project.cwd, relativePath);
-      const preview = readPreview(target);
-      if (!["text", "markdown", "html", "image"].includes(preview.kind)) throw new RemoteProtocolError("UNSUPPORTED", "Only text, Markdown, HTML and image previews are available remotely");
-      if (preview.text && preview.text.length > 524_288) preview.text = preview.text.slice(0, 524_288);
+      const preview = readRemotePreview(target);
+      if (!["text", "markdown", "html", "image", "xlsx"].includes(preview.kind)) throw new RemoteProtocolError("UNSUPPORTED", "Only text, Markdown, HTML, image and Excel previews are available remotely");
+      const maxRemoteTextChars = preview.kind === "xlsx" ? 1_200_000 : 524_288;
+      if (preview.text && preview.text.length > maxRemoteTextChars) {
+        if (preview.kind === "xlsx") throw new RemoteProtocolError("PAYLOAD_TOO_LARGE", "Spreadsheet preview is too large");
+        preview.text = preview.text.slice(0, maxRemoteTextChars);
+      }
       if (preview.base64 && preview.base64.length > 2_800_000) throw new RemoteProtocolError("PAYLOAD_TOO_LARGE", "Preview is too large");
       if (preview.message) preview.message = remoteSafeString(preview.message);
       delete preview.previewUrl;
@@ -1301,6 +1374,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   });
   activeRemoteHost = remoteHost;
   remoteHost.start();
+  if (getConfig().remoteSignalingEnabled) remoteHost.enableSignaling(true);
 
   remotePublish = (channel, payload) => {
     if (!payload || typeof payload !== "object") return;
@@ -1329,9 +1403,15 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
 
   ipcMain.handle("remote:getStatus", () => remoteHost.getStatus());
   ipcMain.handle("remote:createPairing", () => remoteHost.createPairingTicket());
-  ipcMain.handle("remote:enableSignaling", (_e, args?: { manual?: boolean }) => remoteHost.enableSignaling(args?.manual === true));
+  ipcMain.handle("remote:enableSignaling", (_e, args?: { manual?: boolean }) => {
+    const manual = args?.manual === true;
+    const enabled = remoteHost.enableSignaling(manual);
+    if (manual) updateConfig({ remoteSignalingEnabled: enabled });
+    return enabled;
+  });
   ipcMain.handle("remote:disableSignaling", () => {
     remoteHost.disableSignaling();
+    updateConfig({ remoteSignalingEnabled: false });
     return { ok: true };
   });
   ipcMain.handle("remote:approvePairing", (_e, connectionId: string) => remoteHost.approvePairing(connectionId));
@@ -1350,7 +1430,6 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     const signalingUrl = patch.signalingUrl?.trim() || DEFAULT_REMOTE_SIGNALING_URL;
     const next = updateConfig({ remoteSignalingUrl: signalingUrl });
     remoteHost.configure(next.remoteSignalingUrl || DEFAULT_REMOTE_SIGNALING_URL, [...BUILT_IN_REMOTE_STUN_URLS]);
-    remoteHost.enableSignaling();
     return { remoteSignalingUrl: next.remoteSignalingUrl };
   });
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
-import { useStore } from "../store";
+import { localizeAutomationThreadTitle, useStore } from "../store";
 import { fileIcon, formatTokens } from "../lib/format";
 import { useOutsideClose } from "../lib/useOutsideClose";
 import type { FileNode } from "../lib/types";
@@ -283,6 +283,7 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
                       {p.threads.length === 0 && <div className="ft-empty">暂无线程</div>}
                       {p.threads.map((t) => {
                         const running = runningSet.has(t.file);
+                        const title = localizeAutomationThreadTitle(t.title, language);
                         const openThread = () => onThreadClick(p.cwd, t.file);
                         return (
                           <div
@@ -297,7 +298,7 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
                               setProjectMenu(null);
                               setThreadMenu({
                                 file: t.file,
-                                name: t.title,
+                                name: title,
                                 pinned: !!t.pinned,
                                 x: Math.min(event.clientX, window.innerWidth - 190),
                                 y: Math.min(event.clientY, window.innerHeight - 70),
@@ -310,7 +311,7 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
                                 openThread();
                               }
                             }}
-                            title={t.title}
+                            title={title}
                           >
                             <div className="thread-title">
                               {running && <span className="thread-running" />}
@@ -319,15 +320,15 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
                                   <Star size={11} />
                                 </span>
                               )}
-                              <span className="tt-text">{t.title}</span>
+                              <span className="tt-text">{title}</span>
                               <button
                                 type="button"
                                 className="thread-archive-btn"
                                 title="归档线程"
-                                aria-label={`归档线程：${t.title}`}
+                                aria-label={`归档线程：${title}`}
                                 onClick={(event) => {
                                   event.stopPropagation();
-                                  void archiveThread(p.cwd, t.file, t.title);
+                                  void archiveThread(p.cwd, t.file, title);
                                 }}
                               >
                                 <Archive size={13} />

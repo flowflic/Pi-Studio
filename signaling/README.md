@@ -16,3 +16,28 @@ For production, put the service behind a TLS reverse proxy and configure the
 desktop and Android clients with a `wss://` URL. TURN is deliberately not part
 of this project: the clients use STUN for candidate discovery and reject relay
 candidates.
+
+## Nginx one-click configuration
+
+The repository includes an interactive Nginx configuration script. It asks for
+the domain, certificate path, private-key path, and the local signaling address,
+then creates the HTTPS/WSS reverse proxy, enables it, validates the Nginx
+configuration, and reloads Nginx:
+
+```bash
+bash scripts/configure-nginx-signaling.sh
+```
+
+The script can also be run non-interactively:
+
+```bash
+bash scripts/configure-nginx-signaling.sh \
+  relay.example.com \
+  /etc/letsencrypt/live/relay.example.com/fullchain.pem \
+  /etc/letsencrypt/live/relay.example.com/privkey.pem \
+  http://127.0.0.1:8787
+```
+
+The certificate and private-key files must already exist. The private key must
+be unencrypted so Nginx can restart unattended. The script does not issue or
+renew certificates and does not replace an existing unrelated Nginx site.

@@ -96,7 +96,7 @@ export function Chat() {
   // only an actually empty draft uses the default label.
   const title = isEmptyDraft
     ? "New Thread"
-    : (sidebarTitle || getDisplayThreadTitle(thread.sessionName, firstUserText)).slice(0, 40) || "New Thread";
+    : getDisplayThreadTitle(sidebarTitle || thread.sessionName, firstUserText, language).slice(0, 40) || "New Thread";
 
   // Group consecutive assistant messages into one visual turn: a single agent
   // round emits many assistant messages (think -> tool -> ... -> final reply)

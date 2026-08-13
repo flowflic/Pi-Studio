@@ -131,6 +131,7 @@ const api = {
     extui: (cb: (p: { threadId: string; request: any }) => void) => on("pi:extui", cb),
     exit: (cb: (p: { threadId: string; code: number | null; signal: string | null; stderr: string }) => void) => on("pi:exit", cb),
     error: (cb: (p: { threadId: string; message: string }) => void) => on("pi:error", cb),
+    focusThread: (cb: (p: { threadId: string }) => void) => on("app:focus-thread", cb),
     automation: (cb: (p: { type: "start" | "done"; taskId: string; name: string; ok?: boolean; error?: string }) => void) =>
       on("pi:automation", cb),
     projectsChanged: (cb: (p: { cwd?: string; sessionFile?: string }) => void) => on("pi:projects-changed", cb),

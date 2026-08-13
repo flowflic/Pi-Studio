@@ -46,6 +46,8 @@ export interface AppConfig {
   automationTasks: AutomationTask[];
   /** Public WSS endpoint used only for SDP/ICE signaling; no app data is sent there. */
   remoteSignalingUrl: string;
+  /** Whether the user wants Signal enabled across application restarts. */
+  remoteSignalingEnabled: boolean;
   /** Internal STUN endpoints used for direct WebRTC candidate discovery. TURN is intentionally unsupported. */
   remoteStunUrls: string[];
 }
@@ -98,6 +100,7 @@ const DEFAULTS: AppConfig = {
   threadPermissions: {},
   automationTasks: [],
   remoteSignalingUrl: DEFAULT_REMOTE_SIGNALING_URL,
+  remoteSignalingEnabled: false,
   remoteStunUrls: [...BUILT_IN_REMOTE_STUN_URLS],
 };
 
@@ -127,6 +130,9 @@ export function loadConfig(userDataDir: string): AppConfig {
         remoteSignalingUrl: typeof parsed.remoteSignalingUrl === "string" && parsed.remoteSignalingUrl.trim()
           ? parsed.remoteSignalingUrl.trim()
           : DEFAULTS.remoteSignalingUrl,
+        remoteSignalingEnabled: typeof parsed.remoteSignalingEnabled === "boolean"
+          ? parsed.remoteSignalingEnabled
+          : DEFAULTS.remoteSignalingEnabled,
         // Older config files may contain a custom list. Always replace it with
         // the built-in list so this transport setting cannot be changed via
         // persisted data or a generic config update.

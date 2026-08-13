@@ -29,6 +29,10 @@ interface AssistantMessageSummary {
   errorMessage?: unknown;
 }
 
+export function automationSessionName(taskName: string, language: "en" | "zh"): string {
+  return `${language === "zh" ? "自动化" : "Automation"}: ${taskName}`;
+}
+
 let timer: NodeJS.Timeout | null = null;
 let bootTimer: NodeJS.Timeout | null = null;
 const running = new Set<string>();
@@ -166,7 +170,7 @@ async function execute(task: AutomationTask): Promise<void> {
         piCliPath: getConfig().piCliPath,
         extensions: [ensureGateExtension(getConfigDir())],
         gateModeFile,
-        name: `自动化: ${task.name}`,
+        name: automationSessionName(task.name, getConfig().language),
         onEvent: (e: any) => {
           if (e?.type === "message_end" && e.message?.role === "assistant") {
             lastAssistantMessage = {

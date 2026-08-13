@@ -24,6 +24,13 @@ assert.match(desktopIpc, /skills: remoteSkills/);
 assert.match(desktopIpc, /MODEL_UNAVAILABLE/);
 assert.match(desktopIpc, /lastReplyIndex/);
 assert.match(desktopIpc, /remotePathFromArgs\(block\.arguments\)/);
+assert.match(desktopIpc, /readRemotePreview\(target\)/);
+assert.match(desktopIpc, /\["text", "markdown", "html", "image", "xlsx"\]/);
+
+const previewService = readFileSync(resolve(root, "src", "main", "preview-service.ts"), "utf8");
+assert.match(previewService, /export function readRemotePreview/);
+assert.match(previewService, /pi-studio-xlsx-v1/);
+assert.match(previewService, /REMOTE_SHEET_MAX_JSON_CHARS/);
 
 const androidProtocol = readFileSync(resolve(root, "android", "app", "src", "main", "java", "com", "pistudio", "remote", "RemoteProtocol.kt"), "utf8");
 assert.match(androidProtocol, /data class RemoteModelOption/);

@@ -33,7 +33,7 @@ Pi Studio 是一个独立的 Electron 桌面客户端，用于运行 [Pi coding 
 
 - **插件管理** —— 支持搜索、安装、更新、启用、停用和删除来自 npm、GitHub 或本地路径的 Pi extension 包；同一面板也会列出 Pi 共享目录和当前项目中发现的 skill。
 - **Skills Hub** —— 浏览和搜索公开的 [skills.sh](https://skills.sh/) 目录，查看 skill 详情与安装命令，并直接安装到 Pi。
-- **Android 手机远程控制** —— 通过短时有效的二维码与桌面端配对，配置 Signal WSS 地址，查看连接状态并管理可信设备。远程传输使用带 STUN 发现的直连 WebRTC，并有意拒绝 TURN/relay 候选。
+- **Android 手机远程控制** —— 通过短时有效的二维码与桌面端配对，配置 Signal WSS 地址，查看连接状态并管理可信设备。远程传输使用带 STUN 发现的直连 WebRTC，并有意拒绝 TURN/relay 候选；针对 Pi-Studio-Remote 0.2，项目相对路径预览还支持受限的 Excel/CSV 表格快照。
 - **中英文界面** —— 桌面端支持在 English 和简体中文之间切换。
 
 ## 功能

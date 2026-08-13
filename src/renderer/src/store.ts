@@ -74,8 +74,24 @@ export function getDisplayUserPrompt(text: string): string {
   return skill ? skill.userMessage || `skill: ${skill.name}` : text;
 }
 
-export function getDisplayThreadTitle(sessionName: string | null | undefined, promptText: string): string {
+/** Keep automation session titles aligned with the selected UI language,
+ * including sessions created before the title was localized. */
+export function localizeAutomationThreadTitle(
+  sessionName: string | null | undefined,
+  language: AppConfig["language"],
+): string {
   const name = (sessionName || "").trim();
+  const match = name.match(/^(?:自动化|Automation)\s*[:：]\s*(.+)$/i);
+  if (!match) return name;
+  return `${language === "zh" ? "自动化" : "Automation"}: ${match[1].trim()}`;
+}
+
+export function getDisplayThreadTitle(
+  sessionName: string | null | undefined,
+  promptText: string,
+  language: AppConfig["language"],
+): string {
+  const name = localizeAutomationThreadTitle(sessionName, language);
   const prompt = getDisplayUserPrompt(promptText).trim();
   const placeholder = /^(?:new thread|new task|新线程|新建任务)$/i.test(name);
   return name && !placeholder && !/^<skill(?:\s|>)/i.test(name) ? name : prompt;
@@ -124,6 +140,7 @@ function mergeLiveThreadsIntoProjects(
   archivedThreads: ArchivedThread[] = [],
   pinnedProjects: string[] = [],
   pinnedThreads: string[] = [],
+  language: AppConfig["language"] = "en",
 ): ProjectSummary[] {
   const archived = new Set(archivedProjects.map((cwd) => cwd.toLowerCase()));
   const archivedThreadFiles = new Set(archivedThreads.map((thread) => thread.file.toLowerCase()));
@@ -138,6 +155,7 @@ function mergeLiveThreadsIntoProjects(
       .filter((thread) => !archivedThreadFiles.has(thread.file.toLowerCase()))
       .map((thread) => ({
         ...thread,
+        title: localizeAutomationThreadTitle(thread.title, language),
         pinned: thread.pinned || pinnedThreadSet.has(thread.file.toLowerCase()),
       })),
   }));
@@ -171,7 +189,7 @@ function mergeLiveThreadsIntoProjects(
     project.threads.unshift({
       file,
       id: file,
-      title: getDisplayThreadTitle(thread.sessionName, firstText).slice(0, 80) || "New Thread",
+      title: getDisplayThreadTitle(thread.sessionName, firstText, language).slice(0, 80) || "New Thread",
       preview: firstText.slice(0, 120) || (firstUser.images?.length ? "图片消息" : ""),
       updatedAt: lastUser.timestamp || Date.now(),
       messageCount: thread.messages.filter((message) => message.role === "user" || message.role === "assistant").length,
@@ -1195,6 +1213,7 @@ export const useStore = create<PiStore>()((set, get) => ({
         appConfig?.archivedThreads || [],
         appConfig?.pinnedProjects || [],
         appConfig?.pinnedThreads || [],
+        appConfig?.language || "en",
       );
       set((state) => ({
         projects,
@@ -1229,6 +1248,7 @@ export const useStore = create<PiStore>()((set, get) => ({
           s.config?.archivedThreads || [],
           s.config?.pinnedProjects || [],
           s.config?.pinnedThreads || [],
+          s.config?.language || "en",
         );
         return {
           projects,
@@ -1378,9 +1398,11 @@ export const useStore = create<PiStore>()((set, get) => ({
           [sessionFile]: {
             ...s.threads[sessionFile],
             sessionName:
-              findProjectThreadTitle(s.projects, sessionFile) ||
-              getDisplayThreadTitle(null, s.threads[sessionFile].messages.find((message) => message.role === "user")?.text || "") ||
-              s.threads[sessionFile].sessionName,
+              getDisplayThreadTitle(
+                findProjectThreadTitle(s.projects, sessionFile) || s.threads[sessionFile].sessionName,
+                s.threads[sessionFile].messages.find((message) => message.role === "user")?.text || "",
+                s.config?.language || "en",
+              ) || s.threads[sessionFile].sessionName,
             isNewSession: false,
             creatingSession: false,
           },
@@ -1403,7 +1425,7 @@ export const useStore = create<PiStore>()((set, get) => ({
         const thread: ThreadState = {
           ...emptyThread(hist.cwd || cwd),
           sessionFile: hist.sessionFile || sessionFile,
-          sessionName: sidebarTitle || hist.sessionName || getDisplayThreadTitle(null, firstUserText) || null,
+          sessionName: getDisplayThreadTitle(sidebarTitle || hist.sessionName, firstUserText, get().config?.language || "en") || null,
           isNewSession: false,
           creatingSession: false,
           model: hist.model,
@@ -1494,7 +1516,11 @@ export const useStore = create<PiStore>()((set, get) => ({
             sessionFile: res.sessionFile || t.sessionFile,
             sessionName: freshSession
               ? null
-              : (sidebarTitle || res.sessionName || prev?.sessionName || getDisplayThreadTitle(null, firstUserText) || null),
+              : (getDisplayThreadTitle(
+                  sidebarTitle || res.sessionName || prev?.sessionName,
+                  firstUserText,
+                  s.config?.language || "en",
+                ) || null),
             isNewSession: freshSession ? true : prev?.isNewSession,
             creatingSession: prev?.creatingSession,
             model: res.model ?? prev?.model ?? null,
@@ -1589,7 +1615,7 @@ export const useStore = create<PiStore>()((set, get) => ({
     const hasAtt = !!attachments && attachments.length > 0;
     if (!trimmed && !hasImg && !hasAtt) return;
     const wasStreaming = !!get().threads[threadId]?.isStreaming;
-    const optimisticTitle = getDisplayThreadTitle(null, trimmed).trim().slice(0, 80);
+    const optimisticTitle = getDisplayThreadTitle(null, trimmed, get().config?.language || "en").trim().slice(0, 80);
     const optimistic: ViewMessage = {
       key: `opt-${uid()}`,
       role: "user",
@@ -2001,7 +2027,11 @@ export const useStore = create<PiStore>()((set, get) => ({
               ...state.threads,
               [file]: {
                 ...state.threads[file],
-                sessionName: sidebarTitle || getDisplayThreadTitle(null, firstUserText) || state.threads[file].sessionName,
+                sessionName: getDisplayThreadTitle(
+                  sidebarTitle || state.threads[file].sessionName,
+                  firstUserText,
+                  state.config?.language || "en",
+                ) || state.threads[file].sessionName,
                 isNewSession: false,
                 creatingSession: false,
               },

@@ -248,6 +248,7 @@ export interface AppConfig {
   theme: "dark" | "light" | "system";
   language: "en" | "zh";
   remoteSignalingUrl: string;
+  remoteSignalingEnabled: boolean;
   remoteStunUrls: string[];
 }
 

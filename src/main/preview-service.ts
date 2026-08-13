@@ -1,10 +1,13 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, extname } from "node:path";
+import XLSX from "xlsx";
 
 /**
  * Reads a file and returns a renderer-friendly preview payload. Heavy parsing
  * (pdf/docx/xlsx) is done in the renderer with pdfjs / mammoth / sheetjs; here
- * we only classify by extension and return either text or base64 bytes.
+ * we only classify by extension and return either text or base64 bytes. The
+ * remote companion uses readRemotePreview below for a bounded table snapshot
+ * instead of receiving the raw workbook binary.
  */
 
 export type PreviewPayload = {
@@ -151,7 +154,9 @@ export function readPreview(absPath: string): PreviewPayload {
     return {
       ...base,
       kind: "xlsx",
-      mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      mime: ext === ".xls"
+        ? "application/vnd.ms-excel"
+        : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       base64: readFileSync(absPath).toString("base64"),
     };
   }
@@ -212,4 +217,93 @@ export function readPreview(absPath: string): PreviewPayload {
     }
   }
   return { ...base, kind: "unsupported", message: "No preview available for this file type" };
+}
+
+const REMOTE_SHEET_MAX_SHEETS = 20;
+const REMOTE_SHEET_MAX_ROWS = 200;
+const REMOTE_SHEET_MAX_COLUMNS = 30;
+const REMOTE_SHEET_MAX_CELL_CHARS = 240;
+const REMOTE_SHEET_MAX_TEXT_CHARS = 900_000;
+const REMOTE_SHEET_MAX_JSON_CHARS = 1_100_000;
+
+/**
+ * Convert Excel/CSV files into a bounded table snapshot for remote clients.
+ * Android should not need to ship a second Office parser or receive the raw
+ * workbook binary over the WebRTC data channel.
+ */
+export function readRemotePreview(absPath: string): PreviewPayload {
+  const preview = readPreview(absPath);
+  if (preview.kind !== "xlsx") return preview;
+
+  try {
+    const workbook = XLSX.readFile(absPath, { cellText: true, cellDates: true });
+    let remainingChars = REMOTE_SHEET_MAX_TEXT_CHARS;
+    let truncated = preview.truncated === true || workbook.SheetNames.length > REMOTE_SHEET_MAX_SHEETS;
+    const sheets = workbook.SheetNames.slice(0, REMOTE_SHEET_MAX_SHEETS).flatMap((name) => {
+      if (remainingChars <= 0) {
+        truncated = true;
+        return [];
+      }
+      const rawRows = XLSX.utils.sheet_to_json(workbook.Sheets[name], {
+        header: 1,
+        raw: false,
+        defval: "",
+        blankrows: false,
+      }) as unknown[];
+      if (rawRows.length > REMOTE_SHEET_MAX_ROWS) truncated = true;
+      const rows: string[][] = [];
+      for (const rawRow of rawRows.slice(0, REMOTE_SHEET_MAX_ROWS)) {
+        if (remainingChars <= 0) {
+          truncated = true;
+          break;
+        }
+        if (!Array.isArray(rawRow)) continue;
+        if (rawRow.length > REMOTE_SHEET_MAX_COLUMNS) truncated = true;
+        const row: string[] = [];
+        for (const value of rawRow.slice(0, REMOTE_SHEET_MAX_COLUMNS)) {
+          let cell = String(value ?? "");
+          if (cell.length > REMOTE_SHEET_MAX_CELL_CHARS) {
+            cell = cell.slice(0, REMOTE_SHEET_MAX_CELL_CHARS);
+            truncated = true;
+          }
+          if (cell.length > remainingChars) {
+            cell = cell.slice(0, remainingChars);
+            truncated = true;
+          }
+          remainingChars -= cell.length;
+          row.push(cell);
+        }
+        rows.push(row);
+      }
+      return rows.length ? [{ name, rows }] : [];
+    });
+    const boundedSheets = sheets.map((sheet) => ({
+      name: sheet.name,
+      rows: sheet.rows.map((row) => [...row]),
+    }));
+    let text = JSON.stringify({ format: "pi-studio-xlsx-v1", sheets: boundedSheets });
+    // Cell limits are counted before JSON escaping. Remove complete trailing
+    // rows/sheets if escaping pushes the valid JSON envelope over the remote
+    // transport budget; never slice JSON into an invalid document.
+    while (text.length > REMOTE_SHEET_MAX_JSON_CHARS && boundedSheets.length > 0) {
+      const lastSheet = boundedSheets[boundedSheets.length - 1];
+      if (lastSheet.rows.length > 1) lastSheet.rows.pop();
+      else boundedSheets.pop();
+      truncated = true;
+      text = JSON.stringify({ format: "pi-studio-xlsx-v1", sheets: boundedSheets });
+    }
+    const { base64: _base64, ...withoutBinary } = preview;
+    return {
+      ...withoutBinary,
+      text,
+      lang: "pi-studio-xlsx-v1",
+      truncated,
+    };
+  } catch {
+    const { base64: _base64, ...withoutBinary } = preview;
+    return {
+      ...withoutBinary,
+      message: "Excel preview could not be parsed on the Pi Studio host",
+    };
+  }
 }

@@ -16,6 +16,24 @@ export function usePiEvents() {
     const u2 = window.pi.on.extui((p) => handleExtUi(p.threadId, p.request));
     const u3 = window.pi.on.exit((p) => handleExit(p.threadId, p));
     const u4 = window.pi.on.error((p) => handleError(p.threadId, p.message));
+    const u7 = window.pi.on.focusThread((p) => {
+      const threadId = typeof p?.threadId === "string" ? p.threadId : "";
+      if (!threadId) return;
+      const focus = () => {
+        const state = useStore.getState();
+        if (state.threads[threadId]) {
+          state.setActiveThread(threadId);
+          return true;
+        }
+        const target = state.projects
+          .map((project) => ({ project, thread: project.threads.find((item) => item.file.toLowerCase() === threadId.toLowerCase()) }))
+          .find((item) => !!item.thread);
+        if (!target?.thread) return false;
+        void state.goToThread(target.project.cwd, target.thread.file);
+        return true;
+      };
+      if (!focus()) void useStore.getState().refreshProjects().then(focus);
+    });
     const u5 = window.pi.on.automation((p) => {
       const st = useStore.getState();
       if (p.type === "done") {
@@ -33,6 +51,7 @@ export function usePiEvents() {
       u2();
       u3();
       u4();
+      u7();
       u5();
       u6();
     };
