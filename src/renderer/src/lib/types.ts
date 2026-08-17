@@ -287,6 +287,8 @@ export interface ModelDef {
   id: string;
   name?: string;
   api?: ApiType;
+  /** Optional per-model endpoint override. The Settings UI displays it with `/v1`. */
+  baseUrl?: string;
   reasoning?: boolean;
   input?: ("text" | "image")[];
   contextWindow?: number;

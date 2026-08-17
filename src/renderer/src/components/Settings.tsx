@@ -431,6 +431,30 @@ function ModelRow({
       </div>
       {adv && (
         <div className="set-model-adv">
+          <Field
+            label={language === "zh" ? "API 类型覆盖" : "API type override"}
+            hint={language === "zh" ? "留空则继承提供商；切换 Anthropic 时地址仍填写带 /v1 的形式。" : "Leave empty to inherit the provider; enter Anthropic URLs with /v1 too."}
+          >
+            <select className="set-select" value={m.api || ""} onChange={(e) => patch({ api: (e.target.value || undefined) as ApiType | undefined })}>
+              <option value="">{language === "zh" ? "（继承提供商）" : "(Inherit provider)"}</option>
+              {API_TYPES.map((api) => (
+                <option key={api} value={api}>
+                  {api}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field
+            label="Base URL"
+            hint={language === "zh" ? "可选的模型级地址覆盖；界面统一填写带 /v1 的地址。" : "Optional model-level endpoint override; enter the URL with /v1."}
+          >
+            <input
+              className="set-input"
+              placeholder="https://api.example.com/v1"
+              value={m.baseUrl || ""}
+              onChange={(e) => patch({ baseUrl: e.target.value || undefined })}
+            />
+          </Field>
           <Field label="compat" hint="兼容性覆盖，如 thinkingFormat / supportsDeveloperRole 等">
             <JsonField key={`${pfx}:compat`} path={`${pfx}:compat`} value={m.compat} register={register} onChange={(v) => patch({ compat: v as Record<string, unknown> | undefined })} />
           </Field>
@@ -545,13 +569,20 @@ function ProviderCard({
         </button>
       </div>
 
-      <Field label="Base URL" hint="自定义 API 接入地址，如 https://api.example.com/v1">
-        <input className="set-input" placeholder="https://..." value={def.baseUrl || ""} onChange={(e) => patch({ baseUrl: e.target.value || undefined })} />
+      <Field
+        label="Base URL"
+        hint={
+          language === "zh"
+            ? "界面统一填写带 /v1 的地址；Anthropic 写入 Pi 时会自动去掉末尾 /v1。"
+            : "Enter URLs with /v1; Pi removes the trailing /v1 internally for Anthropic."
+        }
+      >
+        <input className="set-input" placeholder="https://api.example.com/v1" value={def.baseUrl || ""} onChange={(e) => patch({ baseUrl: e.target.value || undefined })} />
       </Field>
 
       <Field label="API 类型">
         <select className="set-select" value={def.api || ""} onChange={(e) => patch({ api: (e.target.value || undefined) as ApiType | undefined })}>
-          <option value="">（继承 / 未设）</option>
+          <option value="">{language === "zh" ? "（继承 / 未设）" : "(Inherit / not set)"}</option>
           {API_TYPES.map((a) => (
             <option key={a} value={a}>
               {a}
@@ -1003,9 +1034,15 @@ export function Settings() {
     if (Object.values(invalidJson).some((valid) => !valid)) return pushToast("error", "请先修正标红的高级 JSON 字段");
     setSaving("models");
     try {
-      await window.pi.settings.saveModels(draft.providers);
+      const saved = await window.pi.settings.saveModels(draft.providers);
+      const savedModels = saved?.models as ModelsFile | undefined;
+      if (savedModels) {
+        setDraft(clone(savedModels));
+        setInitialProviders(JSON.stringify(savedModels.providers || {}));
+      } else {
+        setInitialProviders(JSON.stringify(draft.providers));
+      }
       await refreshOpenThreadModels();
-      setInitialProviders(JSON.stringify(draft.providers));
       setFlash("models");
       setTimeout(() => setFlash(null), 1500);
       pushToast(

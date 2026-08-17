@@ -1652,7 +1652,10 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     // new task opened after saving does not adopt a stale pre-save process.
     dropWarmBridge();
     ensureWarmBridge();
-    return { ok: true };
+    // Return the user-facing form so the Settings panel immediately reflects
+    // the canonical `/v1` convention after saving (runtime storage may differ
+    // for Anthropic).
+    return { ok: true, models: readModelsFile() };
   });
   ipcMain.handle("settings:getThinking", () => readThinking());
   ipcMain.handle("settings:saveThinking", (_e, patch: Record<string, unknown>) => writeThinking(patch as any));

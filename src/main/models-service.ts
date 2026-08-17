@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { getConfig } from "./config";
 import { getAgentDir, getSessionsDir } from "./session-store";
 import { isAppManagedRuntime, resolvePiRuntime, runtimeKind } from "./pi-bridge";
+import { toPiRuntimeProvider, toPiRuntimeProviders, toSettingsProviders } from "./model-url-compat";
 import type { Diagnostics, ModelsFile, ProviderDef, ThinkingDefaults } from "../renderer/src/lib/types";
 
 /**
@@ -52,17 +53,18 @@ export function readModelsFile(): ModelsFile {
   const parsed = readJson<ModelsFile>(getModelsPath());
   if (!parsed || typeof parsed !== "object") return { providers: {} };
   if (!parsed.providers || typeof parsed.providers !== "object") parsed.providers = {};
-  return parsed;
+  return { ...parsed, providers: toSettingsProviders(parsed.providers) };
 }
 
 /**
  * Replace the `providers` subtree while preserving any other top-level keys the
  * user may have added by hand. `providers` is the renderer's edited copy; each
- * provider/model object inside it is written verbatim (unknown fields included).
+ * provider/model object inside it is preserved (unknown fields included), with
+ * only protocol-specific URL compatibility normalized for Pi at write time.
  */
 export function writeModelsProviders(providers: Record<string, ProviderDef>): ModelsFile {
   const existing = readJson<Record<string, unknown>>(getModelsPath()) || {};
-  const next: Record<string, unknown> = { ...existing, providers: providers || {} };
+  const next: Record<string, unknown> = { ...existing, providers: toPiRuntimeProviders(providers) };
   writeJsonAtomic(getModelsPath(), next);
   return next as ModelsFile;
 }
@@ -116,7 +118,11 @@ export async function testModelAvailability(
     // Keep the test cheap with the lowest supported level, but do not send an
     // invalid "off" request for models explicitly configured for reasoning.
     const testThinkingLevel = targetModel?.reasoning ? "minimal" : "off";
-    writeFileSync(join(testDir, "models.json"), JSON.stringify({ providers: { [providerId]: provider } }, null, 2) + "\n", "utf8");
+    writeFileSync(
+      join(testDir, "models.json"),
+      JSON.stringify({ providers: { [providerId]: toPiRuntimeProvider(provider) } }, null, 2) + "\n",
+      "utf8",
+    );
     const authPath = getAuthPath();
     if (existsSync(authPath)) copyFileSync(authPath, join(testDir, "auth.json"));
     const runtime = await resolvePiRuntime(getConfig().piCliPath);
