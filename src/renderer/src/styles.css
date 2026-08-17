@@ -690,19 +690,18 @@ body.sidebar-resizing * {
   flex-direction: column;
   align-items: center;
   gap: 3px;
-  max-height: min(60vh, 420px);
+  /* 30 dots: 30 * 18px + 29 * 3px + 2px padding. */
+  max-height: 629px;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 1px;
-  scrollbar-color: rgba(87, 96, 84, .34) transparent;
-  scrollbar-width: thin;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 .user-message-nav-scroll::-webkit-scrollbar {
-  width: 5px;
-}
-.user-message-nav-scroll::-webkit-scrollbar-thumb {
-  border: 1px solid transparent;
-  background: rgba(87, 96, 84, .34);
-  background-clip: padding-box;
+  display: none;
+  width: 0;
+  height: 0;
 }
 .user-message-nav-dot {
   display: grid;
@@ -3719,9 +3718,15 @@ textarea.modal-input {
 }
 .set-model-grid {
   display: grid;
-  grid-template-columns: 1.5fr 1.2fr auto auto 1fr 1fr auto auto;
+  /* Keep the text fields and token limits large enough to edit comfortably.
+   * The previous eight-column row squeezed the second model's controlled
+   * inputs at the settings modal's normal width. */
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto auto;
   gap: 8px;
   align-items: center;
+}
+.set-model-grid > * {
+  min-width: 0;
 }
 .set-model-testbar {
   min-height: 31px;

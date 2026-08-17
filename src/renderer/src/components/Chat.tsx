@@ -10,6 +10,8 @@ import { ExtUiPromptCard } from "./ExtUiPromptCard";
 import { Sidebar, PanelRight, Copy, ThumbUp, ThumbDown, Refresh, Edit, Folder, Files, Gauge, Branch } from "./icons";
 import appIconUrl from "../../../../resources/icon.png";
 
+const USER_MESSAGE_NAV_MIN_ITEMS = 6;
+
 export function Chat() {
   const activeThreadId = useStore((s) => s.activeThreadId);
   const thread = useStore((s) => (activeThreadId ? s.threads[activeThreadId] : null));
@@ -322,7 +324,7 @@ export function Chat() {
             )}
           </div>
         </div>
-        {userGroups.length > 5 && (
+        {userGroups.length >= USER_MESSAGE_NAV_MIN_ITEMS && (
           <UserMessageNav groups={userGroups} language={language} onJump={jumpToUserMessage} />
         )}
       </div>
@@ -389,7 +391,7 @@ function UserMessageNav({
   const navRef = useRef<HTMLElement>(null);
   const [hovered, setHovered] = useState<{ text: string; top: number } | null>(null);
 
-  if (groups.length <= 5) return null;
+  if (groups.length < USER_MESSAGE_NAV_MIN_ITEMS) return null;
 
   return (
     <nav

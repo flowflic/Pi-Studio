@@ -367,7 +367,13 @@ function ModelRow({
   return (
     <div className="set-model">
       <div className="set-model-grid">
-        <input className="set-input" placeholder="模型 id（必填）" value={m.id || ""} onChange={(e) => patch({ id: e.target.value })} />
+        <input
+          className="set-input"
+          autoFocus={i === (provider.models || []).length - 1 && !m.id}
+          placeholder="模型 id（必填）"
+          value={m.id || ""}
+          onChange={(e) => patch({ id: e.target.value })}
+        />
         <input className="set-input" placeholder="显示名称" value={m.name || ""} onChange={(e) => patch({ name: e.target.value || undefined })} />
         <label className="set-check" title="支持扩展思考">
           <Toggle checked={!!m.reasoning} onChange={(v) => patch({ reasoning: v })} />
