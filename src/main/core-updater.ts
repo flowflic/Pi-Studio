@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   createReadStream,
   createWriteStream,
@@ -60,6 +60,9 @@ const DEFAULT_PACKAGE = "@earendil-works/pi-coding-agent";
 const FETCH_TIMEOUT_MS = 30_000;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 const DEP_CONCURRENCY = 8;
+const RENAME_RETRY_COUNT = 10;
+const RENAME_RETRY_BASE_DELAY_MS = 200;
+const RENAME_RETRY_MAX_DELAY_MS = 1_500;
 
 export type UpdateStage = "checking" | "downloading" | "installing" | "pruning" | "activating" | "done" | "error";
 
@@ -256,6 +259,39 @@ function rmSafe(target: string): void {
   }
 }
 
+function isRetryableRenameError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "EPERM" || code === "EBUSY" || code === "EACCES" || code === "ENOTEMPTY";
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Windows Defender, indexers, and shell preview handlers can briefly retain a
+ * handle to a freshly extracted directory. A single renameSync therefore
+ * makes an otherwise valid update fail. Retry only the Windows-style
+ * transient errors, and keep the destination replacement limited to the
+ * disposable staging tree used by this updater.
+ */
+async function renameWithRetry(source: string, destination: string, replaceDestination = false): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= RENAME_RETRY_COUNT; attempt++) {
+    try {
+      if (replaceDestination && existsSync(destination)) rmSafe(destination);
+      renameSync(source, destination);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableRenameError(error) || attempt === RENAME_RETRY_COUNT) throw error;
+      const delay = Math.min(RENAME_RETRY_MAX_DELAY_MS, RENAME_RETRY_BASE_DELAY_MS * 2 ** attempt);
+      await wait(delay);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 /**
  * Absolute path to a trustworthy tar. On Windows we must NOT take whatever
  * `tar` sits first on PATH: Git-for-Windows ships GNU tar, which parses the
@@ -395,7 +431,9 @@ export async function checkForCoreUpdate(): Promise<CoreUpdateStatus> {
  */
 export async function installCoreUpdate(onProgress?: ProgressFn): Promise<CoreUpdateResult> {
   const progress: ProgressFn = onProgress || (() => undefined);
-  const staging = join(runtimeBaseDir(), `.staging-${process.pid}`);
+  // Never reuse a failed staging tree in the same process. A previous attempt
+  // may have left a locked package directory behind after its cleanup failed.
+  const staging = join(runtimeBaseDir(), `.staging-${process.pid}-${Date.now()}-${randomUUID().slice(0, 8)}`);
 
   try {
     // ---- check -----------------------------------------------------------
@@ -487,7 +525,7 @@ export async function installCoreUpdate(onProgress?: ProgressFn): Promise<CoreUp
         await verifyIntegrity(tmpTgz, e.integrity);
         await runCommand(tarBinary(), ["-xzf", tmpTgz, "-C", tmpDir]);
         mkdirSync(dirname(dest), { recursive: true });
-        renameSync(singleRootDir(tmpDir), dest);
+        await renameWithRetry(singleRootDir(tmpDir), dest, true);
       } finally {
         rmSafe(tmpDir);
         rmSafe(tmpTgz);
@@ -512,7 +550,9 @@ export async function installCoreUpdate(onProgress?: ProgressFn): Promise<CoreUp
     mkdirSync(runtimeVersionsDir(), { recursive: true });
     rmSafe(targetRoot);
     mkdirSync(targetRoot, { recursive: true });
-    renameSync(root, join(targetRoot, "pi"));
+    // The target version tree is disposable too: a previous interrupted run
+    // may have left its `pi` directory behind while cleanup was still locked.
+    await renameWithRetry(root, join(targetRoot, "pi"), true);
     const nodeName = process.platform === "win32" ? "node.exe" : "node";
     mkdirSync(join(targetRoot, "node"), { recursive: true });
     cpSync(runtimeNode, join(targetRoot, "node", nodeName));
