@@ -27,15 +27,15 @@ export function isSandboxApprovalRequest(request: unknown): boolean {
   if (!request || typeof request !== "object") return false;
   const value = request as { method?: unknown; title?: unknown };
   if (value.method !== "select" || typeof value.title !== "string") return false;
-  return /^Sandbox\s+(?:authorization|请求授权)\s*[:：]/i.test(value.title.trim());
+  return /^(?:Sandbox\s+authorization|Sandbox\s+请求授权|沙盒\s*请求授权|请求授权)\s*[:：]/i.test(value.title.trim());
 }
 
 /** Extract only the operation label; the full command remains inside Pi Studio. */
-export function sandboxOperationFromTitle(title: unknown): string {
-  if (typeof title !== "string") return "Shell";
+export function sandboxOperationFromTitle(title: unknown, language: NotificationLanguage = "en"): string {
+  if (typeof title !== "string") return language === "zh" ? "命令行" : "Shell";
   const firstLine = title.split(/\r?\n/, 1)[0] || "";
-  const operation = firstLine.replace(/^Sandbox\s+(?:authorization|请求授权)\s*[:：]\s*/i, "").trim();
-  return truncateNotificationText(operation || "Shell", 80);
+  const operation = firstLine.replace(/^(?:Sandbox\s+(?:authorization|请求授权)|沙盒\s*请求授权|请求授权)\s*[:：]\s*/i, "").trim();
+  return truncateNotificationText(operation || (language === "zh" ? "命令行" : "Shell"), 80);
 }
 
 function revealThread(getWindow: WindowGetter, threadId: string): void {
@@ -95,13 +95,13 @@ export function createSystemNotificationCenter(getWindow: WindowGetter): SystemN
 
   return {
     notifySandboxApproval(threadId, language, operation) {
-      const label = truncateNotificationText(operation || "Shell", 80);
+      const label = truncateNotificationText(operation || (language === "zh" ? "命令行" : "Shell"), 80);
       show(threadId, language, {
         title: language === "zh" ? "Pi Studio · 需要确认" : "Pi Studio · Approval required",
         subtitle: label,
         body:
           language === "zh"
-            ? `Sandbox 正在等待确认（${label}）。点击此提醒返回 Pi Studio。`
+            ? `沙盒正在等待确认（${label}）。点击此提醒返回 Pi Studio。`
             : `Sandbox is waiting for approval (${label}). Click to return to Pi Studio.`,
         persistent: true,
       });

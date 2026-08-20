@@ -5,6 +5,7 @@ import { useStore } from "../store";
 import { Markdown } from "../lib/markdown";
 import { CODE_LANGUAGE_ALIASES, CODE_LANGUAGES } from "../lib/code-languages";
 import { formatBytes } from "../lib/format";
+import { translateUiText } from "../lib/i18n";
 import { Close, Contract, Copy, Expand, Refresh } from "./icons";
 
 Object.entries(CODE_LANGUAGES).forEach(([name, grammar]) => hljs.registerLanguage(name, grammar as any));
@@ -232,9 +233,9 @@ function PreviewBody({ payload, language }: { payload: any; language: string }) 
     case "toobig":
       return <div className="pv-unsupported">{language === "zh" ? "文件过大，无法预览。" : "This file is too large to preview."}</div>;
     case "missing":
-      return <div className="pv-unsupported">{payload.message || (language === "zh" ? "文件不存在。" : "File not found.")}</div>;
+      return <div className="pv-unsupported">{payload.message ? translateUiText(payload.message, language as "en" | "zh") : language === "zh" ? "文件不存在。" : "File not found."}</div>;
     default:
-      return <div className="pv-unsupported">{payload.message || (language === "zh" ? "暂不支持预览该格式。" : "Preview is not available for this format.")}</div>;
+      return <div className="pv-unsupported">{payload.message ? translateUiText(payload.message, language as "en" | "zh") : language === "zh" ? "暂不支持预览该格式。" : "Preview is not available for this format."}</div>;
   }
 }
 

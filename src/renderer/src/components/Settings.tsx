@@ -3,6 +3,7 @@ import { useStore } from "../store";
 import type { ApiType, Diagnostics, ModelDef, ModelsFile, ProviderDef, ThinkingDefaults } from "../lib/types";
 import { cleanOutput, hasLibuvAssertion, lastLine, stripAnsi } from "../lib/update";
 import { reasoningLevelLabel } from "../lib/reasoning";
+import { translateUiText } from "../lib/i18n";
 import { Archive, Check, Close, Edit, Plus, Refresh, Folder } from "./icons";
 import appIconUrl from "../../../../resources/icon.png";
 
@@ -280,7 +281,7 @@ function KvList({ value, onChange }: { value?: Record<string, string>; onChange:
     <div className="set-kv">
       {rows.map((r) => (
         <div className="set-kv-row" key={r.id}>
-          <input className="set-input" placeholder="header 名" value={r.k} onChange={(e) => update(r.id, { k: e.target.value })} />
+        <input className="set-input" placeholder="请求头名称" value={r.k} onChange={(e) => update(r.id, { k: e.target.value })} />
           <input className="set-input" placeholder="值（支持 $ENV / !cmd）" value={r.v} onChange={(e) => update(r.id, { v: e.target.value })} />
           <button className="set-iconbtn danger" title="删除" onClick={() => remove(r.id)}>
             ×
@@ -386,13 +387,13 @@ function ModelRow({
         <TokenLimitInput
           value={m.contextWindow}
           onChange={(value) => patch({ contextWindow: value })}
-          label={language === "zh" ? "上下文长度（K tokens）" : "Context length (K tokens)"}
+          label={language === "zh" ? "上下文长度（K 令牌）" : "Context length (K tokens)"}
           placeholder="128"
         />
         <TokenLimitInput
           value={m.maxTokens}
           onChange={(value) => patch({ maxTokens: value })}
-          label={language === "zh" ? "最大输出（K tokens）" : "Max output (K tokens)"}
+          label={language === "zh" ? "最大输出（K 令牌）" : "Max output (K tokens)"}
           placeholder="16"
         />
         <button className="set-iconbtn" title="高级" onClick={() => setAdv((v) => !v)}>
@@ -421,7 +422,7 @@ function ModelRow({
           {test.state === "error" && (
             <>
               <span className="set-model-testdot" />
-              <span title={test.message}>{test.message}</span>
+              <span title={test.message}>{test.message ? translateUiText(test.message, language) : ""}</span>
             </>
           )}
         </div>
@@ -445,7 +446,7 @@ function ModelRow({
             </select>
           </Field>
           <Field
-            label="Base URL"
+            label={language === "zh" ? "基础地址" : "Base URL"}
             hint={language === "zh" ? "可选的模型级地址覆盖；界面统一填写带 /v1 的地址。" : "Optional model-level endpoint override; enter the URL with /v1."}
           >
             <input
@@ -570,7 +571,7 @@ function ProviderCard({
       </div>
 
       <Field
-        label="Base URL"
+        label={language === "zh" ? "基础地址" : "Base URL"}
         hint={
           language === "zh"
             ? "界面统一填写带 /v1 的地址；Anthropic 写入 Pi 时会自动去掉末尾 /v1。"
@@ -591,7 +592,7 @@ function ProviderCard({
         </select>
       </Field>
 
-      <Field label="API Key" hint="支持明文、环境变量 $MY_KEY、或 shell 命令 !cmd">
+      <Field label={language === "zh" ? "API 密钥" : "API Key"} hint="支持明文、环境变量 $MY_KEY、或 shell 命令 !cmd">
         <div className="set-keywrap">
           <input className="set-input" type={showKey ? "text" : "password"} placeholder="sk-... 或 $ENV_VAR 或 !command" value={def.apiKey || ""} onChange={(e) => patch({ apiKey: e.target.value || undefined })} />
           <button className="set-iconbtn" title={showKey ? "隐藏" : "显示"} onClick={() => setShowKey((v) => !v)}>
@@ -600,7 +601,7 @@ function ProviderCard({
         </div>
       </Field>
 
-      <Field label="请求头 headers" hint="自定义请求头，值同样支持 $ENV / !cmd">
+      <Field label={language === "zh" ? "请求头" : "Request headers"} hint="自定义请求头，值同样支持 $ENV / !cmd">
         <KvList value={def.headers as Record<string, string> | undefined} onChange={(v) => patch({ headers: v })} />
       </Field>
 
@@ -775,7 +776,7 @@ export function Settings() {
   const checkAppRelease = async () => {
     setAppUpdating(true);
     setAppUpdateError(null);
-    setAppUpdateProgress({ stage: "checking", message: language === "zh" ? "正在检查 GitHub Releases 最新版本…" : "Checking the latest GitHub Release…" });
+    setAppUpdateProgress({ stage: "checking", message: language === "zh" ? "正在检查 GitHub 发布页最新版本…" : "Checking the latest GitHub Release…" });
     try {
       const status: any = await window.pi.app.checkAppUpdate();
       setAppUpdateStatus(status);
@@ -1138,8 +1139,8 @@ export function Settings() {
             <label className="set-language">
               <span>{language === "zh" ? "语言" : "Language"}</span>
               <select value={config?.language || "en"} onChange={(e) => changeLanguage(e.target.value as "en" | "zh")}>
-                <option value="en">English</option>
-                <option value="zh">中文</option>
+                <option value="en">{language === "zh" ? "英文" : "English"}</option>
+                <option value="zh">{language === "zh" ? "中文" : "Chinese"}</option>
               </select>
             </label>
             编辑会写入 <code>~/.pi/agent</code>，与终端 pi 共享。
@@ -1479,7 +1480,7 @@ export function Settings() {
                   <div className="set-card-title">{language === "zh" ? "Pi Studio 应用更新" : "Pi Studio app update"}</div>
                   <div className="set-hint" style={{ marginBottom: 12 }}>
                     {language === "zh"
-                      ? "从 GitHub Releases 检查最新正式版本。发现新版本后，可在此下载 Windows 安装包并安装重启。"
+                      ? "从 GitHub 发布页检查最新正式版本。发现新版本后，可在此下载 Windows 安装包并安装重启。"
                       : "Check the latest stable release from GitHub Releases. Download and install a Windows update here, then restart Pi Studio."}
                   </div>
                   <div className="set-diag-grid" style={{ marginBottom: 12 }}>
@@ -1499,7 +1500,7 @@ export function Settings() {
                       )}
                     </div>
                     <div className="set-diag-k">{language === "zh" ? "来源" : "Source"}</div>
-                    <div className="set-diag-v">GitHub Releases</div>
+                    <div className="set-diag-v">{language === "zh" ? "GitHub 发布页" : "GitHub Releases"}</div>
                   </div>
                   <div className="set-diag-btns">
                     <button className="set-btn ghost" onClick={checkAppRelease} disabled={appUpdating}>
@@ -1535,7 +1536,7 @@ export function Settings() {
                   {appUpdateProgress && (appUpdating || appUpdateReady) && (
                     <div className="upd-progress">
                       <div className="upd-progress-head">
-                        <span className="upd-progress-label">{appUpdateProgress.message}</span>
+                        <span className="upd-progress-label">{translateUiText(appUpdateProgress.message, language)}</span>
                         {appUpdateProgress.pct != null && <span className="upd-progress-pct">{appUpdateProgress.pct}%</span>}
                       </div>
                       <div className={"upd-bar" + (appUpdateProgress.pct == null ? " indeterminate" : "")}>
@@ -1543,7 +1544,7 @@ export function Settings() {
                       </div>
                     </div>
                   )}
-                  {appUpdateError && !appUpdating && <div className="set-diag-err">⚠ {appUpdateError}</div>}
+                  {appUpdateError && !appUpdating && <div className="set-diag-err">⚠ {translateUiText(appUpdateError, language)}</div>}
                 </div>
 
                 <div className="set-card">
@@ -1592,7 +1593,7 @@ export function Settings() {
                 {updating && progress && (
                   <div className="upd-progress">
                     <div className="upd-progress-head">
-                      <span className="upd-progress-label">{progress.message}</span>
+                      <span className="upd-progress-label">{translateUiText(progress.message, language)}</span>
                       {liveUpdatePct != null && <span className="upd-progress-pct">{liveUpdatePct}%</span>}
                     </div>
                     <div className={"upd-bar" + (liveUpdatePct == null ? " indeterminate" : "")}>
@@ -1600,7 +1601,7 @@ export function Settings() {
                     </div>
                   </div>
                 )}
-                {updateError && !updating && <div className="set-diag-err">⚠ {updateError}</div>}
+                {updateError && !updating && <div className="set-diag-err">⚠ {translateUiText(updateError, language)}</div>}
                 </div>
               </>
             )}

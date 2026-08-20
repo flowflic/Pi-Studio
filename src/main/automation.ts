@@ -1,4 +1,4 @@
-import { getConfig, getConfigDir, updateConfig, type AutomationTask, type TaskSchedule } from "./config";
+import { getConfig, getConfigDir, reloadConfig, updateConfig, type AutomationTask, type TaskSchedule } from "./config";
 import { PiBridge } from "./pi-bridge";
 import { createGateModeFile, ensureGateExtension, removeGateModeFile } from "./permission-gate";
 
@@ -37,6 +37,7 @@ let timer: NodeJS.Timeout | null = null;
 let bootTimer: NodeJS.Timeout | null = null;
 const running = new Set<string>();
 const activeBridges = new Set<PiBridge>();
+const activeBridgesByTask = new Map<string, Set<PiBridge>>();
 let notify: ((p: AutomationNotify) => void) | null = null;
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -60,13 +61,28 @@ function persist(tasks: AutomationTask[]): void {
   updateConfig({ automationTasks: tasks });
 }
 
-function patchTask(id: string, patch: Partial<AutomationTask>): void {
-  persist(getConfig().automationTasks.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+function persistedTasks(): AutomationTask[] {
+  return reloadConfig().automationTasks;
+}
+
+function taskStillExists(id: string): boolean {
+  return persistedTasks().some((task) => task.id === id);
+}
+
+function patchTask(id: string, patch: Partial<AutomationTask>): boolean {
+  const tasks = persistedTasks();
+  if (!tasks.some((task) => task.id === id)) return false;
+  persist(tasks.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  return true;
 }
 
 function tick(): void {
   const now = new Date();
-  for (const task of getConfig().automationTasks) {
+  // The renderer normally deletes through this process, but another Pi Studio
+  // process or an older build may have written config.json. Re-read before
+  // every tick so a deleted task cannot continue from a stale memory snapshot.
+  const tasks = persistedTasks();
+  for (const task of tasks) {
     if (!task.enabled || running.has(task.id)) continue;
     if (!matches(task.schedule, now)) continue;
     const slot = slotKey(task.schedule, now);
@@ -74,6 +90,22 @@ function tick(): void {
     // Claim the slot before awaiting so a re-entrant tick can't double-fire.
     patchTask(task.id, { lastRunSlot: slot, lastRunAt: now.getTime() });
     void execute(task);
+  }
+}
+
+/** Remove a task and stop a run that was already spawned for it. */
+export function removeAutomationTask(id: string): void {
+  const tasks = persistedTasks();
+  if (tasks.some((task) => task.id === id)) persist(tasks.filter((task) => task.id !== id));
+
+  const bridges = activeBridgesByTask.get(id);
+  if (!bridges) return;
+  for (const bridge of bridges) {
+    try {
+      bridge.stop();
+    } catch {
+      /* ignore cancellation races */
+    }
   }
 }
 
@@ -138,6 +170,9 @@ function formatProcessExit(info: { code: number | null; signal: NodeJS.Signals |
 }
 
 async function execute(task: AutomationTask): Promise<void> {
+  // A tick may have queued execute() just before the task was deleted. Do not
+  // create a new Pi process for a task that no longer exists on disk.
+  if (!taskStillExists(task.id)) return;
   running.add(task.id);
   patchTask(task.id, { lastStatus: undefined, lastError: undefined });
   notify?.({ type: "start", taskId: task.id, name: task.name });
@@ -165,6 +200,10 @@ async function execute(task: AutomationTask): Promise<void> {
 
       const permission = task.permission === "full" ? "full" : "sandbox";
       gateModeFile = createGateModeFile(getConfigDir(), permission);
+      if (!taskStillExists(task.id)) {
+        finish(() => resolve());
+        return;
+      }
       bridge = new PiBridge({
         cwd: task.cwd,
         piCliPath: getConfig().piCliPath,
@@ -203,21 +242,31 @@ async function execute(task: AutomationTask): Promise<void> {
         onError: (err) => finish(() => reject(err)),
       });
       activeBridges.add(bridge);
+      let taskBridges = activeBridgesByTask.get(task.id);
+      if (!taskBridges) {
+        taskBridges = new Set<PiBridge>();
+        activeBridgesByTask.set(task.id, taskBridges);
+      }
+      taskBridges.add(bridge);
 
       bridge
         .start()
         .then(() => bridge!.prompt(task.prompt))
         .catch((e) => finish(() => reject(e)));
     });
-    patchTask(task.id, { lastStatus: "ok", lastError: undefined });
-    notify?.({ type: "done", taskId: task.id, name: task.name, ok: true });
+    if (taskStillExists(task.id)) {
+      patchTask(task.id, { lastStatus: "ok", lastError: undefined });
+      notify?.({ type: "done", taskId: task.id, name: task.name, ok: true });
+    }
   } catch (e: any) {
     const msg = e?.message || String(e);
-    patchTask(task.id, { lastStatus: "error", lastError: msg });
-    // Keep failures visible in the main-process log as well as the settings UI.
-    // eslint-disable-next-line no-console
-    console.error(`[automation] ${task.name}: ${msg}`);
-    notify?.({ type: "done", taskId: task.id, name: task.name, ok: false, error: msg });
+    if (taskStillExists(task.id)) {
+      patchTask(task.id, { lastStatus: "error", lastError: msg });
+      // Keep failures visible in the main-process log as well as the settings UI.
+      // eslint-disable-next-line no-console
+      console.error(`[automation] ${task.name}: ${msg}`);
+      notify?.({ type: "done", taskId: task.id, name: task.name, ok: false, error: msg });
+    }
   } finally {
     const b = bridge as PiBridge | null;
     try {
@@ -225,7 +274,12 @@ async function execute(task: AutomationTask): Promise<void> {
     } catch {
       /* ignore */
     }
-    if (b) activeBridges.delete(b);
+    if (b) {
+      activeBridges.delete(b);
+      const taskBridges = activeBridgesByTask.get(task.id);
+      taskBridges?.delete(b);
+      if (taskBridges && taskBridges.size === 0) activeBridgesByTask.delete(task.id);
+    }
     if (gateModeFile) removeGateModeFile(gateModeFile);
     running.delete(task.id);
   }
@@ -233,7 +287,7 @@ async function execute(task: AutomationTask): Promise<void> {
 
 /** Run a task immediately (the "Run now" button), bypassing the schedule. */
 export async function runTaskNow(id: string): Promise<void> {
-  const task = getConfig().automationTasks.find((t) => t.id === id);
+  const task = persistedTasks().find((t) => t.id === id);
   if (!task) throw new Error("Task not found");
   if (running.has(id)) return;
   patchTask(id, { lastRunAt: Date.now() });

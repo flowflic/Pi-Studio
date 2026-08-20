@@ -69,7 +69,7 @@ export function AutomationPanel() {
     if (!draft) return;
     if (!draft.name.trim()) return useStore.getState().pushToast("warning", "请填写任务名称");
     if (!draft.cwd) return useStore.getState().pushToast("warning", "请选择工作文件夹");
-    if (!draft.prompt.trim()) return useStore.getState().pushToast("warning", "请填写要执行的 prompt");
+    if (!draft.prompt.trim()) return useStore.getState().pushToast("warning", "请填写要执行的提示词");
     await saveTask(draft);
     setDraft(null);
   };
@@ -96,7 +96,7 @@ export function AutomationPanel() {
             </span>
             <div>
               <div className="set-brand-title">自动化</div>
-              <div className="set-brand-sub">定时执行可使用 skill 的自定义 prompt（仅在 Pi Studio 运行时调度）</div>
+              <div className="set-brand-sub">{language === "zh" ? "定时执行可使用技能的自定义提示词（仅在 Pi Studio 运行时调度）" : "Schedule custom prompts that can use skills (runs while Pi Studio is open)"}</div>
             </div>
           </div>
           <button className="set-iconbtn" title="关闭" onClick={close}>
@@ -108,7 +108,7 @@ export function AutomationPanel() {
           {!draft && (
             <>
               <div className="plugins-install">
-                <span className="muted">共 {tasks.length} 个任务</span>
+                <span className="muted">{language === "zh" ? `共 ${tasks.length} 个任务` : `${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}`}</span>
                 <button className="set-btn primary" onClick={() => setDraft(newTask())}>
                   <Plus size={14} /> 新建任务
                 </button>
@@ -121,7 +121,7 @@ export function AutomationPanel() {
                     <span className="plugins-row-name">{t.name || "未命名任务"}</span>
                     <span className="auto-freq">{summarize(t.schedule, language)}</span>
                     <span className={`auto-freq ${t.permission === "full" ? "plugins-off" : ""}`}>
-                      {t.permission === "full" ? (language === "zh" ? "完全权限" : "Full access") : "Sandbox"}
+                      {t.permission === "full" ? (language === "zh" ? "完全权限" : "Full access") : language === "zh" ? "沙盒" : "Sandbox"}
                     </span>
                     {t.lastStatus === "error" && <span className="plugins-off" title={t.lastError}>上次失败</span>}
                   </div>
@@ -176,12 +176,14 @@ export function AutomationPanel() {
               </div>
 
               <div className="set-row wide">
-                <label className="set-label">Prompt</label>
+                <label className="set-label">{language === "zh" ? "提示词" : "Prompt"}</label>
                 <div className="set-control">
                   <textarea
                     className="set-json"
                     style={{ minHeight: 110 }}
-                    placeholder={"要执行的指令，可调用 skill，例如：\n/standup 生成今日 standup 报告并写入 docs/"}
+                    placeholder={language === "zh"
+                      ? "要执行的指令，可调用技能，例如：\n/standup 生成今日 standup 报告并写入 docs/"
+                      : "Instructions to run. Skills are supported, for example:\n/standup Create today's standup report in docs/"}
                     value={draft.prompt}
                     onChange={(e) => patch({ prompt: e.target.value })}
                   />
@@ -199,7 +201,7 @@ export function AutomationPanel() {
                         className={`set-btn ${draft.permission !== "full" ? "primary" : "ghost"}`}
                         onClick={() => patch({ permission: "sandbox" })}
                       >
-                        Sandbox
+                        {language === "zh" ? "沙盒" : "Sandbox"}
                       </button>
                       <button
                         className={`set-btn ${draft.permission === "full" ? "primary" : "ghost"}`}
@@ -210,7 +212,7 @@ export function AutomationPanel() {
                     </div>
                     <div className="set-hint">
                       {language === "zh"
-                        ? "自动化无法等待授权。Sandbox 会阻止需要确认的操作；完全权限仅用于你明确信任的任务。"
+                        ? "自动化无法等待授权。沙盒会阻止需要确认的操作；完全权限仅用于你明确信任的任务。"
                         : "Automations cannot wait for approval. Sandbox blocks operations that require confirmation; use Full access only for explicitly trusted tasks."}
                     </div>
                   </div>

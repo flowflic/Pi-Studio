@@ -150,7 +150,7 @@ export function SearchModal() {
               <Close size={14} />
             </button>
           ) : (
-            <span className="kbd">Esc</span>
+            <span className="kbd">{language === "zh" ? "退出" : "Esc"}</span>
           )}
         </div>
 
@@ -202,10 +202,10 @@ export function SearchModal() {
             <span className="kbd">↑</span> <span className="kbd">↓</span> 选择
           </span>
           <span>
-            <span className="kbd">Enter</span> 打开
+            <span className="kbd">{language === "zh" ? "回车" : "Enter"}</span> {language === "zh" ? "打开" : "Open"}
           </span>
           <span>
-            <span className="kbd">Esc</span> 关闭
+            <span className="kbd">{language === "zh" ? "退出" : "Esc"}</span> {language === "zh" ? "关闭" : "Close"}
           </span>
           <span className="search-foot-n">{results.length > 0 ? `${results.length} 个线程` : ""}</span>
         </div>

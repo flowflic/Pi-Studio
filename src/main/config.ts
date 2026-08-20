@@ -156,6 +156,12 @@ export function getConfig(): AppConfig {
   return cached;
 }
 
+/** Re-read the persisted config so background services see changes made by another app process. */
+export function reloadConfig(): AppConfig {
+  if (!cachedDir) throw new Error("config not loaded; call loadConfig() after app ready");
+  return loadConfig(cachedDir);
+}
+
 /** The userData directory that holds config.json (used for runtime assets like the gate extension). */
 export function getConfigDir(): string {
   return cachedDir;

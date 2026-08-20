@@ -24,10 +24,11 @@ export function ExtUiPromptCard({ threadId }: { threadId: string }) {
   if (!request) return null;
   const cancel = () =>
     respond(threadId, request.id, request.method === "confirm" ? { confirmed: false } : { cancelled: true });
-  const titleParts = String(request.title || "Pi extension").split(/\r?\n/);
-  const title = titleParts.shift() || "Pi extension";
+  const fallbackTitle = language === "zh" ? "Pi 扩展" : "Pi extension";
+  const titleParts = String(request.title || fallbackTitle).split(/\r?\n/);
+  const title = titleParts.shift() || fallbackTitle;
   const detail = [...titleParts, request.message || ""].filter(Boolean).join("\n");
-  const isSandbox = /sandbox/i.test(title);
+  const isSandbox = /sandbox|沙盒/i.test(title);
 
   return (
     <div className={`extui-card ${request.method} ${isSandbox ? "sandbox-card" : ""}`} role="alertdialog" aria-labelledby={`extui-title-${request.id}`}>

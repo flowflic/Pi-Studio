@@ -1,18 +1,24 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { app, BrowserWindow, Menu, shell } from "electron";
+import { app, BrowserWindow, Menu, shell, Tray } from "electron";
 import { loadConfig, getConfig, updateConfig } from "./config";
 import { cleanupOldRuntimes } from "./core-updater";
 import { registerHtmlPreviewProtocol, registerHtmlPreviewScheme } from "./html-preview-protocol";
 import { registerIpc, stopAllBridges, stopRemoteHost } from "./ipc";
 import { stopAutomations, stopScheduler } from "./automation";
 
-const APP_USER_MODEL_ID = "com.pi-studio.app";
+const IS_DEV_BUILD = !app.isPackaged;
+const APP_USER_MODEL_ID = IS_DEV_BUILD ? "com.pi-studio.app.dev" : "com.pi-studio.app";
 
 // Establish the product identity before Electron creates any windows or jump
 // list entries. Packaged builds also carry the matching executable metadata;
 // development builds still run as electron.exe at the OS process level.
-app.setName("Pi Studio");
+app.setName(IS_DEV_BUILD ? "Pi Studio Dev" : "Pi Studio");
+// Keep `npm run dev` independent from an installed Pi Studio instance. Both
+// otherwise share Electron's default userData lock, so the dev process can
+// silently hand its launch to the already-running packaged app and show old
+// window/tray behavior instead of the source currently being edited.
+if (IS_DEV_BUILD) app.setPath("userData", join(app.getPath("appData"), "Pi Studio Dev"));
 if (process.platform === "win32") app.setAppUserModelId(APP_USER_MODEL_ID);
 
 registerHtmlPreviewScheme();
@@ -34,7 +40,16 @@ registerHtmlPreviewScheme();
 }
 
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
+let isQuitting = false;
 const getWin = () => mainWindow;
+
+function showMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
 
 /** Resolve the app icon for the live window (dev + packaged). */
 function resolveWindowIcon(): string | undefined {
@@ -44,6 +59,39 @@ function resolveWindowIcon(): string | undefined {
     join((process as any).resourcesPath || "", name),
   ]);
   return candidates.find((p) => p && existsSync(p));
+}
+
+function updateTrayMenu(): void {
+  if (!tray) return;
+  const zh = getConfig().language === "zh";
+  const show = () => showMainWindow();
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: zh ? "显示 Pi Studio" : "Show Pi Studio", click: show },
+      { type: "separator" },
+      {
+        label: zh ? "退出 Pi Studio" : "Quit Pi Studio",
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        },
+      },
+    ]),
+  );
+}
+
+function createTray(): void {
+  if (tray) return;
+  const trayIcon = resolveWindowIcon();
+  if (!trayIcon) return;
+
+  tray = new Tray(trayIcon);
+  tray.setToolTip("Pi Studio");
+  const show = () => showMainWindow();
+  tray.on("click", show);
+  tray.on("double-click", show);
+  tray.on("right-click", updateTrayMenu);
+  updateTrayMenu();
 }
 
 function createWindow(): void {
@@ -95,6 +143,11 @@ function createWindow(): void {
   const sendMax = (v: boolean) => mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.send("window:maximized-changed", v);
   mainWindow.on("maximize", () => sendMax(true));
   mainWindow.on("unmaximize", () => sendMax(false));
+  mainWindow.on("close", (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    mainWindow?.hide();
+  });
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
@@ -110,22 +163,23 @@ function createWindow(): void {
   mainWindow.webContents.on("context-menu", (_event, params) => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     const wc = mainWindow.webContents;
+    const zh = getConfig().language === "zh";
     const hasSelection = params.selectionText.length > 0;
     const template: Electron.MenuItemConstructorOptions[] = [];
 
     if (params.isEditable) {
       template.push(
-        { label: "剪切", enabled: params.editFlags.canCut, click: () => wc.cut() },
-        { label: "复制", enabled: params.editFlags.canCopy, click: () => wc.copy() },
-        { label: "粘贴", enabled: params.editFlags.canPaste, click: () => wc.paste() },
+        { label: zh ? "剪切" : "Cut", enabled: params.editFlags.canCut, click: () => wc.cut() },
+        { label: zh ? "复制" : "Copy", enabled: params.editFlags.canCopy, click: () => wc.copy() },
+        { label: zh ? "粘贴" : "Paste", enabled: params.editFlags.canPaste, click: () => wc.paste() },
         { type: "separator" },
-        { label: "全选", enabled: params.editFlags.canSelectAll, click: () => wc.selectAll() },
+        { label: zh ? "全选" : "Select all", enabled: params.editFlags.canSelectAll, click: () => wc.selectAll() },
       );
     } else {
       template.push(
-        { label: "复制", enabled: hasSelection && params.editFlags.canCopy, click: () => wc.copy() },
+        { label: zh ? "复制" : "Copy", enabled: hasSelection && params.editFlags.canCopy, click: () => wc.copy() },
         { type: "separator" },
-        { label: "全选", enabled: params.editFlags.canSelectAll, click: () => wc.selectAll() },
+        { label: zh ? "全选" : "Select all", enabled: params.editFlags.canSelectAll, click: () => wc.selectAll() },
       );
     }
 
@@ -161,10 +215,7 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
+    showMainWindow();
   });
 
   app.whenReady().then(() => {
@@ -176,13 +227,20 @@ if (!gotLock) {
     cleanupOldRuntimes();
     registerIpc(getWin);
     createWindow();
+    createTray();
     app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+      if (!mainWindow) createWindow();
+      else showMainWindow();
     });
   });
 }
 
 app.on("before-quit", () => {
+  isQuitting = true;
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
   try {
     if (mainWindow && !mainWindow.isDestroyed()) {
       const bounds = mainWindow.getBounds();

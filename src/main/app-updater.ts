@@ -142,7 +142,7 @@ function configureUpdater(): void {
   };
 
   autoUpdater.on("checking-for-update", () => {
-    emitProgress({ stage: "checking", message: "正在检查 GitHub Releases 最新版本…" });
+    emitProgress({ stage: "checking", message: "正在检查 GitHub 发布页最新版本…" });
   });
 
   autoUpdater.on("update-available", (info) => {

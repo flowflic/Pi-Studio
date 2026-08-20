@@ -69,11 +69,11 @@ export function Chat() {
     return (
       <section className="main">
         <div className="chat-head">
-          <button className="iconbtn" title="Toggle sidebar" onClick={toggleSidebar}>
+          <button className="iconbtn" title={language === "zh" ? "切换侧栏" : "Toggle sidebar"} onClick={toggleSidebar}>
             <Sidebar size={16} />
           </button>
           <div className="chat-head-titlewrap">
-            <div className="chat-head-title">New Thread</div>
+            <div className="chat-head-title">{language === "zh" ? "新线程" : "New Thread"}</div>
           </div>
           <div className="spacer" />
         </div>
@@ -97,8 +97,8 @@ export function Chat() {
   // Once this view has messages, derive the header from this thread itself;
   // only an actually empty draft uses the default label.
   const title = isEmptyDraft
-    ? "New Thread"
-    : getDisplayThreadTitle(sidebarTitle || thread.sessionName, firstUserText, language).slice(0, 40) || "New Thread";
+    ? language === "zh" ? "新线程" : "New Thread"
+    : getDisplayThreadTitle(sidebarTitle || thread.sessionName, firstUserText, language).slice(0, 40) || (language === "zh" ? "新线程" : "New Thread");
 
   // Group consecutive assistant messages into one visual turn: a single agent
   // round emits many assistant messages (think -> tool -> ... -> final reply)
@@ -187,7 +187,7 @@ export function Chat() {
   return (
     <section className="main">
       <div className="chat-head">
-        <button className="iconbtn" title="Toggle sidebar" onClick={toggleSidebar}>
+        <button className="iconbtn" title={language === "zh" ? "切换侧栏" : "Toggle sidebar"} onClick={toggleSidebar}>
           <Sidebar size={16} />
         </button>
         <div className="chat-head-titlewrap">
@@ -536,11 +536,13 @@ function MessageGroupInner({
         <div className="msg-user-stack">
           <div className="msg-body">
             {m.sendKind && (
-              <div className={`msg-kind ${m.sendKind}`}>{m.sendKind === "steer" ? "steering" : "follow-up"}</div>
+              <div className={`msg-kind ${m.sendKind}`}>
+                {m.sendKind === "steer" ? (language === "zh" ? "立即插入" : "steering") : language === "zh" ? "待处理后续" : "follow-up"}
+              </div>
             )}
             {skillBlock ? (
               <>
-                <SkillInvocation name={skillBlock.name} />
+                <SkillInvocation name={skillBlock.name} language={language} />
                 {skillBlock.userMessage && <div className="msg-user-text msg-user-skill-request">{skillBlock.userMessage}</div>}
               </>
             ) : (
@@ -550,7 +552,7 @@ function MessageGroupInner({
               <div className="msg-user-imgs">
                 {m.images.map((im, i) => (
                   <button key={i} className="msg-user-img-button" onClick={() => onPreviewImage(im.dataUrl)} title="图片预览">
-                    <img className="msg-user-img" src={im.dataUrl} alt="attachment" />
+                    <img className="msg-user-img" src={im.dataUrl} alt={language === "zh" ? "附件" : "attachment"} />
                   </button>
                 ))}
               </div>
@@ -602,11 +604,11 @@ function MessageGroupInner({
   };
   return (
     <div className="msg assistant">
-      <div className="msg-avatar" aria-label="Pi Studio Agent">
+      <div className="msg-avatar" aria-label={language === "zh" ? "Pi Studio 智能体" : "Pi Studio Agent"}>
         <img className="msg-app-icon" src={appIconUrl} alt="" />
       </div>
       <div className="msg-body">
-        {renderAssistantBlocks(group.items, toolRuns)}
+        {renderAssistantBlocks(group.items, toolRuns, language)}
         {streaming && !hasBlocks && <span className="muted">思考中</span>}
         {streaming && <span className="streaming-dot" />}
         {last.errorMessage && <div style={{ color: "#c0392b", marginTop: 6 }}>{last.errorMessage}</div>}
@@ -657,30 +659,34 @@ function MessageGroupInner({
             {last.model && <span>{last.model}</span>}
             {last.timestamp && <span>{formatClock(last.timestamp)}</span>}
             <span className="msg-actions">
-              <button title="Copy" onClick={() => navigator.clipboard?.writeText(plainOfGroup(group))}>
+              <button title={language === "zh" ? "复制" : "Copy"} onClick={() => navigator.clipboard?.writeText(plainOfGroup(group))}>
                 <Copy size={12} />
               </button>
-              <button title="Good">
+              <button title={language === "zh" ? "有帮助" : "Good"}>
                 <ThumbUp size={12} />
               </button>
-              <button title="Bad">
+              <button title={language === "zh" ? "没帮助" : "Bad"}>
                 <ThumbDown size={12} />
               </button>
             </span>
-            <span className="msg-branch-actions" aria-label="从此 Agent 回复分支">
+            <span className="msg-branch-actions" aria-label={language === "zh" ? "从此智能体回复创建分支" : "Branch from this Agent reply"}>
               <button
                 disabled={locked || !!branching || !last.branchEntryId}
-                title={last.branchEntryId ? "从这条 Agent 回复开始创建新分支" : "连接并保存会话后可 Fork"}
+                title={last.branchEntryId
+                  ? language === "zh" ? "从这条智能体回复开始创建新分支" : "Create a new branch from this Agent reply"
+                  : language === "zh" ? "连接并保存会话后可创建分支" : "Fork is available after the session connects and saves"}
                 onClick={() => runBranchAction("fork")}
               >
-                <Branch size={11} /> {branching === "fork" ? "Forking…" : "Fork"}
+                <Branch size={11} /> {branching === "fork" ? language === "zh" ? "创建中…" : "Forking…" : language === "zh" ? "分支" : "Fork"}
               </button>
               <button
                 disabled={locked || !!branching || !last.branchEntryId}
-                title={last.branchEntryId ? "复制截至这条 Agent 回复的分支" : "连接并保存会话后可 Clone"}
+                title={last.branchEntryId
+                  ? language === "zh" ? "复制截至这条智能体回复的分支" : "Clone the branch through this Agent reply"
+                  : language === "zh" ? "连接并保存会话后可克隆" : "Clone is available after the session connects and saves"}
                 onClick={() => runBranchAction("clone")}
               >
-                <Copy size={11} /> {branching === "clone" ? "Cloning…" : "Clone"}
+                <Copy size={11} /> {branching === "clone" ? language === "zh" ? "克隆中…" : "Cloning…" : language === "zh" ? "克隆" : "Clone"}
               </button>
             </span>
           </div>
@@ -702,7 +708,7 @@ function plainOfGroup(g: MsgGroup): string {
     .join("\n\n");
 }
 
-function renderAssistantBlocks(items: ViewMessage[], toolRuns: Record<string, ToolRun>): ReactNode[] {
+function renderAssistantBlocks(items: ViewMessage[], toolRuns: Record<string, ToolRun>, language: "en" | "zh"): ReactNode[] {
   const toolCount = items
     .flatMap((message) => message.blocks || [])
     .filter((block) => block.type === "toolCall")
@@ -716,40 +722,40 @@ function renderAssistantBlocks(items: ViewMessage[], toolRuns: Record<string, To
         activityShown = true;
         nodes.push(
           <div className="tool-activity-summary" key={`${key}:activity`}>
-            <span className="tool-activity-label">Tool activity</span>
-            <span className="tool-activity-count">{toolCount} {toolCount === 1 ? "call" : "calls"}</span>
+            <span className="tool-activity-label">{language === "zh" ? "工具活动" : "Tool activity"}</span>
+            <span className="tool-activity-count">{toolCount} {language === "zh" ? "次调用" : toolCount === 1 ? "call" : "calls"}</span>
           </div>,
         );
       }
-      nodes.push(<BlockView key={key} block={block} toolRuns={toolRuns} />);
+      nodes.push(<BlockView key={key} block={block} toolRuns={toolRuns} language={language} />);
     });
   });
   return nodes;
 }
 
-function BlockView({ block, toolRuns }: { block: ContentBlock; toolRuns: Record<string, ToolRun> }) {
+function BlockView({ block, toolRuns, language }: { block: ContentBlock; toolRuns: Record<string, ToolRun>; language: "en" | "zh" }) {
   if (block.type === "text") return <Markdown text={block.text} />;
-  if (block.type === "thinking") return <Thinking text={block.thinking} />;
+  if (block.type === "thinking") return <Thinking text={block.thinking} language={language} />;
   const run = toolRuns[block.id] || (block.contentIndex === undefined ? undefined : Object.values(toolRuns).find((candidate) => candidate.contentIndex === block.contentIndex));
-  return <ToolCard id={block.id} name={effectiveToolName(block.name, run)} blockArgs={block.arguments} run={run} />;
+  return <ToolCard id={block.id} name={effectiveToolName(block.name, run)} blockArgs={block.arguments} run={run} language={language} />;
 }
 
-const SkillInvocation = memo(function SkillInvocation({ name }: { name: string }) {
+const SkillInvocation = memo(function SkillInvocation({ name, language }: { name: string; language: "en" | "zh" }) {
   return (
-    <div className="skill-invocation" role="status" aria-label={`skill: ${name}`}>
-        <span className="skill-invocation-label">skill: {name}</span>
+    <div className="skill-invocation" role="status" aria-label={`${language === "zh" ? "技能" : "skill"}: ${name}`}>
+        <span className="skill-invocation-label">{language === "zh" ? "技能" : "skill"}: {name}</span>
     </div>
   );
 });
 
-const Thinking = memo(function Thinking({ text }: { text: string }) {
+const Thinking = memo(function Thinking({ text, language }: { text: string; language: "en" | "zh" }) {
   const [open, setOpen] = useState(false);
   const displayText = normalizeTranscriptText(text);
   return (
     <div className="thinking">
       <button className="thinking-toggle" onClick={() => setOpen((v) => !v)}>
         <span style={{ transform: open ? "rotate(90deg)" : "none", display: "inline-block", transition: "transform .12s" }}>›</span>
-        思考过程 · {displayText.length} 字
+        {language === "zh" ? `思考过程 · ${displayText.length} 字` : `Reasoning · ${displayText.length} chars`}
       </button>
       {open && (
         <div className="thinking-body">
@@ -777,6 +783,10 @@ function toolStatus(run?: ToolRun): ToolStatus {
   return "queued";
 }
 
+function toolStatusLabel(status: ToolStatus): string {
+  return status === "queued" ? "排队中" : status === "running" ? "运行中" : status === "done" ? "已完成" : "出错";
+}
+
 function firstLine(value: unknown, maxLength = 120): string {
   const text = normalizeTranscriptText(value)
     .split("\n")
@@ -786,7 +796,7 @@ function firstLine(value: unknown, maxLength = 120): string {
   return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
 }
 
-function toolSummary(name: string, run?: ToolRun, fallbackArgs?: unknown): string {
+function toolSummary(name: string, run: ToolRun | undefined, fallbackArgs: unknown, language: "en" | "zh"): string {
   const args = parseToolArgs(run, fallbackArgs);
   const command = toolArg(args, ["command", "cmd", "script"]);
   if (typeof command === "string" && command.trim()) return firstLine(command);
@@ -800,10 +810,10 @@ function toolSummary(name: string, run?: ToolRun, fallbackArgs?: unknown): strin
 
   if (args && Object.keys(args).length > 0) {
     const count = Object.keys(args).length;
-    return `${count} argument${count === 1 ? "" : "s"}`;
+    return language === "zh" ? `${count} 个参数` : `${count} argument${count === 1 ? "" : "s"}`;
   }
   if (run?.argsStr) return firstLine(run.argsStr);
-  return name === "tool" ? "Waiting for tool data" : "";
+  return name === "tool" ? (language === "zh" ? "等待工具数据" : "Waiting for tool data") : "";
 }
 
 function toolDuration(run?: ToolRun): string {
@@ -813,22 +823,22 @@ function toolDuration(run?: ToolRun): string {
   return seconds < 1 ? "<1s" : `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
 }
 
-const ToolCard = memo(function ToolCard({ id, name, blockArgs, run }: { id: string; name: string; blockArgs?: unknown; run?: ToolRun }) {
+const ToolCard = memo(function ToolCard({ id, name, blockArgs, run, language }: { id: string; name: string; blockArgs?: unknown; run?: ToolRun; language: "en" | "zh" }) {
   const [open, setOpen] = useState(false);
   const running = run?.running;
-  const argsView = renderToolArgs(name, run, blockArgs);
+  const argsView = renderToolArgs(name, run, blockArgs, language);
   const result = run?.resultText ?? run?.partialText ?? "";
   const status = toolStatus(run);
-  const summary = toolSummary(name, run, blockArgs);
+  const summary = toolSummary(name, run, blockArgs, language);
   const duration = toolDuration(run);
   const detailsId = `tool-details-${id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
   const emptyMessage = !run
-    ? "Waiting for execution data"
+    ? language === "zh" ? "等待执行数据" : "Waiting for execution data"
     : running
-      ? "Output will appear here while the tool runs"
+      ? language === "zh" ? "工具运行时会显示输出" : "Output will appear here while the tool runs"
       : run.completed !== true && !run.isError
-        ? "Queued — execution has not started"
-        : "No output returned";
+        ? language === "zh" ? "排队中，尚未开始执行" : "Queued — execution has not started"
+        : language === "zh" ? "未返回输出" : "No output returned";
   return (
     <div className={`tool-card state-${status} ${open ? "is-open" : ""}`}>
       <button
@@ -842,18 +852,18 @@ const ToolCard = memo(function ToolCard({ id, name, blockArgs, run }: { id: stri
         <span className="tool-name">{name}</span>
         {summary && <span className="tool-summary" title={summary}>{summary}</span>}
         <span className={`tool-status state-${status}`}>
-          {running ? <span className="spinner" /> : status}
+          {running ? <span className="spinner" /> : language === "zh" ? toolStatusLabel(status) : status}
         </span>
         {duration && <span className="tool-duration">{duration}</span>}
       </button>
       {open && (
         <div className="tool-details" id={detailsId}>
           <section className="tool-section">
-            <div className="tool-section-label">Arguments</div>
-            <div className="tool-args">{argsView || <div className="tool-empty compact">Arguments unavailable</div>}</div>
+            <div className="tool-section-label">{language === "zh" ? "参数" : "Arguments"}</div>
+            <div className="tool-args">{argsView || <div className="tool-empty compact">{language === "zh" ? "参数不可用" : "Arguments unavailable"}</div>}</div>
           </section>
           <section className="tool-section">
-            <div className="tool-section-label">Output</div>
+            <div className="tool-section-label">{language === "zh" ? "输出" : "Output"}</div>
             {result ? (
               <div className={`tool-result ${run?.isError ? "err" : ""}`}>
                 <ToolCode text={normalizeTranscriptText(result)} language={languageForResult(name, run, blockArgs)} />
@@ -995,7 +1005,7 @@ function ToolCode({ text, language }: { text: string; language?: string }) {
   return <Markdown text={codeFence(text, language)} />;
 }
 
-function renderToolArgs(name: string, run?: ToolRun, fallbackArgs?: unknown): ReactNode {
+function renderToolArgs(name: string, run: ToolRun | undefined, fallbackArgs: unknown, language: "en" | "zh"): ReactNode {
   const args = parseToolArgs(run, fallbackArgs);
   const command = toolArg(args, ["command", "cmd", "script"]);
   if (matchesTool(name, ["bash", "shell", "sh", "zsh", "exec", "execute", "command", "run", "python"])) {
@@ -1016,7 +1026,7 @@ function renderToolArgs(name: string, run?: ToolRun, fallbackArgs?: unknown): Re
     }
     return (
       <div className="tool-operation">
-        <div className="tool-operation-title">Read{path ? ` · ${path}` : ""}</div>
+        <div className="tool-operation-title">{language === "zh" ? "读取" : "Read"}{path ? ` · ${path}` : ""}</div>
         <ToolCode text={generic} language="json" />
       </div>
     );

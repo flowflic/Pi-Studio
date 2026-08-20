@@ -111,7 +111,7 @@ function SkillsHubPanel({ installedSkills, language }: { installedSkills: SkillI
         <div>
           <div className="skills-hub-kicker">{zh ? "公开目录" : "PUBLIC DIRECTORY"}</div>
           <div className="skills-hub-copy">
-            {zh ? "从 skills.sh 浏览公开 skill，默认按下载量排序。" : "Browse public skills from skills.sh, ranked by installs by default."}
+            {zh ? "从 skills.sh 浏览公开技能，默认按下载量排序。" : "Browse public skills from skills.sh, ranked by installs by default."}
           </div>
         </div>
         <a className="skills-hub-link" href="https://skills.sh/" target="_blank" rel="noreferrer noopener">
@@ -125,8 +125,8 @@ function SkillsHubPanel({ installedSkills, language }: { installedSkills: SkillI
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder={zh ? "搜索公开 skill" : "Search public skills"}
-            aria-label={zh ? "搜索公开 skill" : "Search public skills"}
+            placeholder={zh ? "搜索公开技能" : "Search public skills"}
+            aria-label={zh ? "搜索公开技能" : "Search public skills"}
           />
           {query && (
             <button type="button" className="plugins-search-clear" onClick={() => setQuery("")} aria-label={zh ? "清除搜索" : "Clear search"}>
@@ -146,12 +146,12 @@ function SkillsHubPanel({ installedSkills, language }: { installedSkills: SkillI
 
       {error && <div className="skills-hub-error">{error}</div>}
       <div className="skills-hub-layout">
-        <section className="skills-hub-results" aria-label={zh ? "Skill 搜索结果" : "Skill search results"}>
+        <section className="skills-hub-results" aria-label={zh ? "技能搜索结果" : "Skill search results"}>
           <div className="skills-hub-section-head">
             <span>{query.trim() ? (zh ? "搜索结果" : "SEARCH RESULTS") : zh ? "按下载量排序" : "ALL-TIME DOWNLOADS"}</span>
             <span className="skills-hub-count">{loading ? "…" : results.length}</span>
           </div>
-          {!loading && results.length === 0 && <div className="set-empty-mini">{zh ? "没有匹配的公开 skill。" : "No public skills matched your search."}</div>}
+          {!loading && results.length === 0 && <div className="set-empty-mini">{zh ? "没有匹配的公开技能。" : "No public skills matched your search."}</div>}
           {results.map((skill) => {
             const installed = skillIsInstalled(skill, installedSkills, installedOverrides);
             const active = selected?.id === skill.id;
@@ -188,7 +188,7 @@ function SkillsHubPanel({ installedSkills, language }: { installedSkills: SkillI
                     event.stopPropagation();
                     install(skill);
                   }}
-                  title={installed ? (zh ? "已安装" : "Installed") : zh ? "安装 skill" : "Install skill"}
+                  title={installed ? (zh ? "已安装" : "Installed") : zh ? "安装技能" : "Install skill"}
                   aria-label={installed ? (zh ? `已安装 ${skill.name}` : `${skill.name} installed`) : zh ? `安装 ${skill.name}` : `Install ${skill.name}`}
                 >
                   {installing === key ? <span className="spinner" /> : installed ? <Check size={15} /> : <Plus size={15} />}
@@ -198,8 +198,8 @@ function SkillsHubPanel({ installedSkills, language }: { installedSkills: SkillI
           })}
         </section>
 
-        <aside className="skills-hub-detail" aria-label={zh ? "Skill 详情" : "Skill details"}>
-          {!selected && <div className="skills-hub-detail-empty">{zh ? "选择一个 skill 查看详情" : "Select a skill to view details"}</div>}
+        <aside className="skills-hub-detail" aria-label={zh ? "技能详情" : "Skill details"}>
+          {!selected && <div className="skills-hub-detail-empty">{zh ? "选择一个技能查看详情" : "Select a skill to view details"}</div>}
           {selected && (
             <>
               <div className="skills-hub-detail-head">
@@ -330,9 +330,9 @@ export function PluginsPanel() {
               {hubOpen ? <AppStore size={18} /> : <At size={18} />}
             </span>
             <div>
-              <div className="set-brand-title">{hubOpen ? "Skills Hub" : zh ? "插件" : "Plugins"}</div>
+              <div className="set-brand-title">{hubOpen ? (zh ? "技能中心" : "Skills Hub") : zh ? "插件" : "Plugins"}</div>
               <div className="set-brand-sub">
-                {hubOpen ? (zh ? "浏览并安装 skills.sh 公开 skill" : "Browse and install public skills from skills.sh") : zh ? "管理 pi 的 extension 包与 skill" : "Manage Pi extension packages and skills"}
+                {hubOpen ? (zh ? "浏览并安装 skills.sh 公开技能" : "Browse and install public skills from skills.sh") : zh ? "管理 pi 的扩展包与技能" : "Manage Pi extension packages and skills"}
               </div>
             </div>
           </div>
@@ -344,7 +344,7 @@ export function PluginsPanel() {
             ) : (
               <button className="skills-hub-entry" type="button" onClick={() => setHubOpen(true)}>
                 <AppStore size={14} />
-                Skills Hub
+                {zh ? "技能中心" : "Skills Hub"}
               </button>
             )}
             <button className="set-iconbtn" title={zh ? "关闭" : "Close"} onClick={dismiss}>
@@ -356,7 +356,7 @@ export function PluginsPanel() {
         {hubOpen ? <SkillsHubPanel installedSkills={skills} language={language} /> : <div className="plugins-body">
           <div className="muted plugins-note">
             {zh
-              ? "开关写入 ~/.pi/agent/settings.json，与终端 pi 共享；显示 ~/.pi/agent/skills 和 ~/.agents/skills，Pi 目录同名 skill 优先。"
+              ? "开关写入 ~/.pi/agent/settings.json，与终端 pi 共享；显示 ~/.pi/agent/skills 和 ~/.agents/skills，Pi 目录同名技能优先。"
               : "Changes are written to ~/.pi/agent/settings.json and shared with terminal Pi. Pi Studio displays ~/.pi/agent/skills and ~/.agents/skills; Pi skills win duplicate names."}
           </div>
 
@@ -366,8 +366,8 @@ export function PluginsPanel() {
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder={zh ? "搜索插件或 skill" : "Search plugins or skills"}
-                aria-label={zh ? "搜索插件或 skill" : "Search plugins or skills"}
+                placeholder={zh ? "搜索插件或技能" : "Search plugins or skills"}
+                aria-label={zh ? "搜索插件或技能" : "Search plugins or skills"}
               />
               {query && (
                 <button type="button" className="plugins-search-clear" onClick={() => setQuery("")} aria-label={zh ? "清除搜索" : "Clear search"}>
@@ -375,7 +375,7 @@ export function PluginsPanel() {
                 </button>
               )}
             </div>
-            <button className="set-iconbtn" onClick={() => loadPlugins()} disabled={loading} title={zh ? "刷新插件和 skill" : "Refresh plugins and skills"}>
+            <button className="set-iconbtn" onClick={() => loadPlugins()} disabled={loading} title={zh ? "刷新插件和技能" : "Refresh plugins and skills"}>
               {loading ? <span className="spinner" /> : <Refresh size={15} />}
             </button>
           </div>
@@ -383,7 +383,7 @@ export function PluginsPanel() {
           <section className="plugins-section">
             <div className="plugins-section-head plugins-section-head-row">
               <span>
-                {zh ? "Extension 包" : "Extensions"}（{filteredPackages.length}
+                {zh ? "扩展包" : "Extensions"}（{filteredPackages.length}
                 {normalizedQuery ? ` / ${packages.length}` : ""}）
               </span>
               <button className="set-btn" onClick={updateAll} disabled={updating || packages.length === 0} title={zh ? "检查并更新所有扩展（pi update --extensions）" : "Check and update all extensions (pi update --extensions)"}>
@@ -406,8 +406,8 @@ export function PluginsPanel() {
             </div>
 
             {loading && packages.length === 0 && <div className="set-empty-mini">{zh ? "加载中…" : "Loading…"}</div>}
-            {!loading && packages.length === 0 && <div className="set-empty-mini">{zh ? "尚未安装任何 extension 包。" : "No extension packages installed."}</div>}
-            {packages.length > 0 && filteredPackages.length === 0 && <div className="set-empty-mini">{zh ? "没有匹配的 extension 包。" : "No matching extension packages."}</div>}
+            {!loading && packages.length === 0 && <div className="set-empty-mini">{zh ? "尚未安装任何扩展包。" : "No extension packages installed."}</div>}
+            {packages.length > 0 && filteredPackages.length === 0 && <div className="set-empty-mini">{zh ? "没有匹配的扩展包。" : "No matching extension packages."}</div>}
             {filteredPackages.map((p) => (
               <div className="plugins-row" key={p.source}>
                 <div className="plugins-row-main">
@@ -447,12 +447,12 @@ export function PluginsPanel() {
 
           <section className="plugins-section">
             <div className="plugins-section-head">
-              {zh ? "Skills" : "Skills"} ({filteredSkills.length}
+              {zh ? "技能" : "Skills"} ({filteredSkills.length}
               {normalizedQuery ? ` / ${skills.length}` : ""})
             </div>
             {loading && skills.length === 0 && <div className="set-empty-mini">{zh ? "加载中…" : "Loading…"}</div>}
-            {!loading && skills.length === 0 && <div className="set-empty-mini">{zh ? "未在 ~/.pi/agent/skills 或 ~/.agents/skills 目录发现独立 skill。" : "No standalone skills found in ~/.pi/agent/skills or ~/.agents/skills."}</div>}
-            {skills.length > 0 && filteredSkills.length === 0 && <div className="set-empty-mini">{zh ? "没有匹配的 skill。" : "No matching skills."}</div>}
+            {!loading && skills.length === 0 && <div className="set-empty-mini">{zh ? "未在 ~/.pi/agent/skills 或 ~/.agents/skills 目录发现独立技能。" : "No standalone skills found in ~/.pi/agent/skills or ~/.agents/skills."}</div>}
+            {skills.length > 0 && filteredSkills.length === 0 && <div className="set-empty-mini">{zh ? "没有匹配的技能。" : "No matching skills."}</div>}
             {filteredSkills.map((sk) => (
               <div className="plugins-row" key={sk.path}>
                 <div className="plugins-row-main">
@@ -471,7 +471,7 @@ export function PluginsPanel() {
             ))}
             <div className="muted plugins-note">
               {zh
-                ? "停用 skill 会将其入口文件重命名为 *.disabled（可逆）；新增文件后可点击右上角刷新。"
+                ? "停用技能会将其入口文件重命名为 *.disabled（可逆）；新增文件后可点击右上角刷新。"
                 : "Disabling a skill renames its entry file to *.disabled (reversible). Refresh after adding new files."}
             </div>
           </section>

@@ -74,7 +74,8 @@ const exact: Record<string, string> = {
   "删除提供商": "Delete provider",
   "显示": "Show",
   "隐藏": "Hide",
-  "请求头 headers": "Request headers",
+  "请求头": "Request headers",
+  "请求头名称": "Header name",
   "添加请求头": "Add header",
   "API 类型": "API type",
   "配置文件": "Configuration files",
@@ -87,7 +88,7 @@ const exact: Record<string, string> = {
   "需要确认": "Confirmation required",
   "选择一个选项": "Choose an option",
   "图片预览": "Image preview",
-  "终端 pi 的 Windows 桌面端：完整继承模型、harness 与插件系统。左侧选择项目与线程，右侧预览文件。": "A Windows desktop client for terminal Pi, with its models, harness, and extension system. Choose projects and threads on the left and preview files on the right.",
+  "终端 pi 的 Windows 桌面端：完整继承模型、运行框架与插件系统。左侧选择项目与线程，右侧预览文件。": "A Windows desktop client for terminal Pi, with its models, harness, and extension system. Choose projects and threads on the left and preview files on the right.",
   "搜索会话与文件": "Search threads and files",
   "折叠侧栏": "Collapse sidebar",
   "先在“线程”页打开一个项目。": "Open a project from the Threads tab first.",
@@ -119,6 +120,7 @@ const exact: Record<string, string> = {
   "pi 默认，不拦截任何操作": "Pi default; no operations are intercepted",
   "命令": "Commands",
   "无可用命令": "No commands available",
+  "没有匹配的命令": "No matching commands",
   "搜索命令、插件或 skill": "Search commands, plugins, or skills",
   "模型与思考等级": "Model and effort",
   "无可用模型（检查 auth）": "No models available (check auth)",
@@ -147,6 +149,7 @@ const exact: Record<string, string> = {
   "请填写任务名称": "Enter a task name",
   "请选择工作文件夹": "Choose a working folder",
   "请填写要执行的 prompt": "Enter a prompt to run",
+  "请填写要执行的提示词": "Enter a prompt to run",
   "定时执行可使用 skill 的自定义 prompt（仅在 Pi Studio 运行时调度）": "Schedule custom prompts that can use skills (runs while Pi Studio is open)",
   "共": "Total",
   "个任务": "tasks",
@@ -256,6 +259,8 @@ const exact: Record<string, string> = {
   "关于 Pi Studio": "About Pi Studio",
   "Pi Studio · 终端 pi 的 Windows 桌面端": "Pi Studio · Windows desktop client for terminal Pi",
   "Pi 合计 token 用量": "Total Pi token usage",
+  "条 ·": "messages ·",
+  "个会话": "sessions",
   "Extension 包（": "Extension packages (",
   "请等待当前回复结束后再 Fork。": "Wait for the current reply to finish before forking.",
   "已从所选 Agent 回复创建 Fork。": "Created a fork from the selected Agent reply.",
@@ -272,6 +277,7 @@ const exact: Record<string, string> = {
   "更新命令已执行，但进程退出异常。请检查扩展版本。": "The update command ran, but the process exited unexpectedly. Check the extension version.",
   "未知错误": "Unknown error",
   "删除失败": "Deletion failed",
+  "线程已永久删除，无法恢复。": "Thread permanently deleted and cannot be recovered.",
   "任务已开始执行…": "Task started…",
   "已切换到 sandbox（非只读命令及项目外写入需确认）。": "Switched to sandbox. Non-read-only commands and writes outside the project require confirmation.",
   "已切换到完全权限。": "Switched to full access.",
@@ -290,6 +296,16 @@ const exact: Record<string, string> = {
   "原地更新）。点击下方按钮后，Pi Studio 会自行下载并安装新版本到应用数据目录，更新完成后新开的线程使用新版本。扩展请在「插件」面板更新。": ". Use the button below to download and install a new version into app data. New threads use it after the update. Update extensions in the Plugins panel.",
   "运行": "Run",
   "更新 pi CLI 本体（不含扩展，扩展请在「插件」面板更新）。会先检查是否为最新版本，结果以提示呈现。更新完成后新开的线程使用新版本。": "to update the Pi CLI itself. Extensions are updated separately in the Plugins panel. Pi checks the current version first, and new threads use the updated version.",
+  "正在检查最新版本…": "Checking for updates…",
+  "正在下载 Pi 核心…": "Downloading Pi core…",
+  "正在解压安装包…": "Extracting package…",
+  "正在精简运行时文件…": "Pruning runtime files…",
+  "正在激活新版本…": "Activating the new version…",
+  "正在检查 GitHub 发布页最新版本…": "Checking the latest GitHub Release…",
+  "当前环境不能自动安装应用更新": "This environment cannot install app updates automatically",
+  "请先下载应用更新": "Download the app update first",
+  "更新服务没有返回版本信息": "The update service did not return version information",
+  "更新服务没有返回 Windows 安装包": "The update service did not return a Windows installer",
 };
 
 const prefixes: Array<[string, string]> = [
@@ -318,9 +334,121 @@ const prefixes: Array<[string, string]> = [
   ["检查失败：", "Check failed: "],
   ["自动化任务完成：", "Automation task completed: "],
   ["自动化任务失败：", "Automation task failed: "],
+  ["Pi Studio 更新失败：", "Pi Studio update failed: "],
+  ["启动安装程序失败：", "Failed to start the installer: "],
+  ["永久删除线程失败：", "Failed to permanently delete thread: "],
+  ["Pi 运行时包安装失败：", "Pi runtime package installation failed: "],
 ];
 
-function translateValue(value: string): string {
+/**
+ * A small reverse catalog is intentional here. Most renderer copy is authored
+ * in Chinese and translated by `exact`, but a few desktop controls originated
+ * in English. Keeping their reverse labels here prevents those controls from
+ * leaking into the Chinese UI without translating arbitrary transcript or
+ * extension content.
+ */
+const englishExact: Record<string, string> = {
+  ...Object.fromEntries(Object.entries(exact).map(([source, target]) => [target, source])),
+  "Settings": "设置",
+  "Minimize": "最小化",
+  "Maximize": "最大化",
+  "Close": "关闭",
+  "Dismiss": "关闭提示",
+  "Toggle preview": "切换预览",
+  "Copy": "复制",
+  "Copied": "已复制",
+  "Good": "有帮助",
+  "Bad": "没帮助",
+  "Fork": "分支",
+  "Forking…": "创建分支中…",
+  "Clone": "克隆",
+  "Cloning…": "克隆中…",
+  "Tool activity": "工具活动",
+  "call": "调用",
+  "calls": "次调用",
+  "Waiting for tool data": "等待工具数据",
+  "Waiting for execution data": "等待执行数据",
+  "Output will appear here while the tool runs": "工具运行时会显示输出",
+  "Queued — execution has not started": "排队中，尚未开始执行",
+  "No output returned": "未返回输出",
+  "Arguments": "参数",
+  "Arguments unavailable": "参数不可用",
+  "Output": "输出",
+  "Read": "读取",
+  "attachment": "附件",
+  "Pi Studio Agent": "Pi Studio 智能体",
+  "Commands, plugins & skills": "命令、插件和技能",
+  "image": "图像",
+  "Add files": "添加文件",
+  "Slash commands / skills": "斜杠命令 / 技能",
+  "Stop": "停止",
+  "Send": "发送",
+  "No project": "暂无项目",
+  "Prompt": "提示词",
+  "Sandbox": "沙盒",
+  "Skills Hub": "技能中心",
+  "Help": "帮助",
+  "Open folder": "打开文件夹",
+  "New thread": "新线程",
+  "New Thread": "新线程",
+  "English": "英文",
+  "Pi extension": "Pi 扩展",
+  "No": "否",
+  "Yes": "是",
+  "Cancel": "取消",
+  "OK": "确定",
+  "Save": "保存",
+  "connection failed": "连接失败",
+  "ready": "就绪",
+  "connecting…": "连接中…",
+  "Pi ready": "Pi 已就绪",
+  "Pi unavailable": "Pi 不可用",
+  "Close remote settings": "关闭远程设置",
+  "Open project folder": "打开项目文件夹",
+  "Attach files": "添加文件",
+  "Model started responding successfully.": "模型已成功响应。",
+  "File not found": "文件不存在",
+  "This is a folder": "这是一个文件夹",
+  "Binary file": "二进制文件",
+  "No preview available for this file type": "暂不支持预览此文件类型",
+  "Excel preview could not be parsed on the Pi Studio host": "Pi Studio 无法解析此 Excel 预览",
+  "docx parse failed": "DOCX 解析失败",
+  "xlsx parse failed": "XLSX 解析失败",
+  "pptx parse failed": "PPTX 解析失败",
+  "stat failed": "读取文件状态失败",
+  "Model request failed.": "模型请求失败。",
+  "The model process exited without producing a response.": "模型进程退出时没有返回响应。",
+  "The model did not start responding within 120 seconds.": "模型在 120 秒内没有开始响应。",
+};
+
+const englishPrefixes: Array<[string, string]> = [
+  ...prefixes.map(([source, target]) => [target, source] as [string, string]),
+  ["Failed to load settings: ", "加载设置失败："],
+  ["Failed to load projects: ", "加载项目失败："],
+  ["Open folder failed: ", "打开文件夹失败："],
+  ["Open thread failed: ", "打开线程失败："],
+  ["Pin project failed", "置顶项目失败"],
+  ["Unpin project failed", "取消置顶项目失败"],
+  ["Pin thread failed", "置顶线程失败"],
+  ["Unpin thread failed", "取消置顶线程失败"],
+  ["prompt failed", "提示失败"],
+  ["abort failed", "中止失败"],
+  ["set model failed", "设置模型失败"],
+  ["set thinking failed", "设置思考等级失败"],
+  ["new session failed", "新建会话失败"],
+  ["fork failed", "创建分支失败"],
+  ["clone failed", "克隆失败"],
+  ["rename failed", "重命名失败"],
+  ["load tree failed", "加载文件树失败"],
+  ["read failed", "读取失败"],
+  ["Could not locate Pi runtime", "未找到 Pi 运行时"],
+  ["Timed out while locating the Pi runtime", "查找 Pi 运行时超时"],
+  ["Pi runtime package could not be installed: ", "Pi 运行时包安装失败："],
+  ["No managed Node runtime is available to install the Pi update", "没有可用于安装 Pi 更新的托管 Node 运行时"],
+  ["Model test process exited with code ", "模型测试进程以代码 "],
+];
+
+function translateToEnglish(value: string): string {
   const trimmed = value.trim();
   if (exact[trimmed]) return value.replace(trimmed, exact[trimmed]);
   let translated = value;
@@ -344,23 +472,69 @@ function translateValue(value: string): string {
     .replace(/^每天\s+/, "Daily at ")
     .replace(/^每周\s+/, "Weekly on ")
     .replace(/^更新到\s+v(.+)$/, "Update to v$1")
+    .replace(/^发现新版本\s+v(.+)（当前\s+v(.+)）$/, "Found v$1 (current v$2)")
+    .replace(/^正在安装依赖（(.+?)）…$/, "Installing dependencies ($1)…")
+    .replace(/^已更新到\s+v(.+)$/, "Updated to v$1")
+    .replace(/^Pi 核心已更新到\s+v(.+)，新开的线程将使用新版本。$/, "Pi core updated to v$1. New threads will use it.")
+    .replace(/^正在下载 Pi Studio v(.+)…$/, "Downloading Pi Studio v$1…")
+    .replace(/^Pi Studio v(.+) 已下载，可以安装并重启$/, "Pi Studio v$1 downloaded and ready to install")
+    .replace(/^Pi Studio 已经是最新版本（v(.+)）$/, "Pi Studio is already up to date (v$1)")
+    .replace(/^正在安装 Pi Studio v(.+)，应用将自动重启$/, "Installing Pi Studio v$1; the app will restart")
+    .replace(/^Pi 运行时 v(.+) 已就绪$/, "Pi runtime v$1 is ready")
+    .replace(/^正在准备内置 Pi 运行时 v(.+)$/, "Preparing embedded Pi runtime v$1")
+    .replace(/^正在解压内置 Pi 运行时$/, "Extracting embedded Pi runtime")
+    .replace(/^正在激活 Pi 运行时 v(.+)$/, "Activating Pi runtime v$1")
+    .replace(/^Pi 运行时 v(.+) 已作为独立包安装到应用数据目录：(.+)$/, "Pi runtime v$1 installed as a standalone package at $2")
     .replace(/合计\s*\$/g, "Total $");
+}
+
+function translateToChinese(value: string): string {
+  const trimmed = value.trim();
+  if (englishExact[trimmed]) return value.replace(trimmed, englishExact[trimmed]);
+  for (const [source, target] of englishPrefixes) {
+    if (trimmed.startsWith(source)) {
+      return value.replace(source, target);
+    }
+  }
+  return value
+    .replace(/^(\d+) tasks$/, "$1 个任务")
+    .replace(/^(\d+) matches$/, "$1 处匹配")
+    .replace(/^(\d+) threads$/, "$1 个线程")
+    .replace(/^(\d+) messages$/, "$1 条消息")
+    .replace(/^(\d+) sessions$/, "$1 个会话")
+    .replace(/^(\d+) attachments$/, "$1 个附件")
+    .replace(/^(\d+) models$/, "$1 个模型")
+    .replace(/^Hourly at minute\s+(\d+)$/, "每小时 第 $1 分钟")
+    .replace(/^Daily at\s+/, "每天 ")
+    .replace(/^Weekly on\s+/, "每周 ")
+    .replace(/^Update to\s+v(.+)$/, "更新到 v$1")
+    .replace(/^Pi runtime v(.+) is ready$/, "Pi 运行时 v$1 已就绪")
+    .replace(/^Preparing embedded Pi runtime v(.+)$/, "正在准备内置 Pi 运行时 v$1")
+    .replace(/^Extracting embedded Pi runtime$/, "正在解压内置 Pi 运行时")
+    .replace(/^Activating Pi runtime v(.+)$/, "正在激活 Pi 运行时 v$1")
+    .replace(/^Pi runtime v(.+) installed as a standalone package at (.+)$/, "Pi 运行时 v$1 已作为独立包安装到应用数据目录：$2")
+    .replace(/^Total\s+\$/g, "合计 $");
 }
 
 /** Translate application-owned UI copy. User, Agent, tool, and extension content is excluded by the DOM bridge. */
 export function translateUiText(value: string, language: Language): string {
-  return language === "en" ? translateValue(value) : value;
+  return language === "en" ? translateToEnglish(value) : translateToChinese(value);
 }
 
 const originals = new WeakMap<Node, string>();
 const attrOriginals = new WeakMap<Element, Map<string, string>>();
+const PROTECTED_TEXT_SELECTOR = ".md,.toast,.msg-user-text,.thinking-body,.tool-output,.tool-name,.tool-summary,.modal-title,.modal-msg,.extui-card-message,.extui-card-title,.extui-card-options,.pname,.tt-text,.chat-head-title,.chat-head-folder-path,.project-menu-option,.thread-preview,.project-context-name,.archived-project-name,.archived-thread-name,.archived-thread-path,.msg-artifact-name,.msg-artifact-path,.ft-name,.plugins-row-name,.plugins-row-sub,.auto-prompt,.skills-hub-card-name,.skills-hub-card-source,.skills-hub-description,.skills-hub-install-command,.skills-hub-file,.skills-hub-markdown,.preview-title,.set-prov-id,.search-item-title,.search-item-snippet,.search-item-proj";
+
+function isProtectedText(element: Element | null): boolean {
+  return !!element?.closest(PROTECTED_TEXT_SELECTOR);
+}
 
 function localizeNode(root: ParentNode, language: Language): void {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let node: Node | null;
   while ((node = walker.nextNode())) {
     const parent = node.parentElement;
-    if (!parent || parent.closest(".md,.msg-user-text,.thinking-body,.tool-output,.modal-msg,.extui-card-message")) continue;
+    if (!parent || isProtectedText(parent)) continue;
     if (!originals.has(node)) originals.set(node, node.nodeValue || "");
     const original = originals.get(node) || "";
     const next = translateUiText(original, language);
@@ -371,6 +545,7 @@ function localizeNode(root: ParentNode, language: Language): void {
     for (const attr of ["title", "aria-label", "placeholder"]) {
       const current = el.getAttribute(attr);
       if (current == null) continue;
+      if (isProtectedText(el) || (attr === "title" && el.matches(".thread,.project-head"))) continue;
       let map = attrOriginals.get(el);
       if (!map) {
         map = new Map();

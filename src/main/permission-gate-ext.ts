@@ -428,11 +428,11 @@ export default function permissionGate(pi: any) {
       deny,
     ];
     const heading = zh
-      ? `Sandbox 请求授权：${title}\n${reason}\n\n${detail}`
+      ? `沙盒请求授权：${title}\n${reason}\n\n${detail}`
       : `Sandbox authorization: ${title}\n${reason}\n\n${detail}`;
     const choice = await ctx.ui.select(heading, choices);
     if (!choice || choice === deny) {
-      return blocked(zh ? "用户未授权，Sandbox 已阻止执行" : "The user denied this operation; Sandbox blocked it");
+      return blocked(zh ? "用户未授权，沙盒已阻止执行" : "The user denied this operation; Sandbox blocked it");
     }
     if (choice === allowExact && options.exactKey) approvedExact.add(options.exactKey);
     if (allowPrefix && choice === allowPrefix && options.prefixKey) approvedPrefixes.add(options.prefixKey);
@@ -483,7 +483,7 @@ export default function permissionGate(pi: any) {
         ctx,
         toolName,
         language() === "zh"
-          ? "子 Agent 进程目前无法获得逐工具 Sandbox 拦截；允许即代表本次子 Agent 具有完整本机权限。"
+          ? "子智能体进程目前无法获得逐工具沙盒拦截；允许即代表本次子智能体具有完整本机权限。"
           : "Child agents cannot currently receive per-tool Sandbox interception. Allowing this grants the child full local permissions for this run.",
         redactInput(event.input),
         { cacheable: false },

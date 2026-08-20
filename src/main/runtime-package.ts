@@ -278,7 +278,7 @@ export async function installRuntimePackage(manifest: RuntimeManifest, onProgres
   const target = runtimeRootForVersion(manifest.runtimeVersion);
   if (isUsableRuntimeRoot(target)) {
     activateRuntimeRoot(target, manifest.runtimeVersion);
-    progress({ stage: "done", message: `Pi runtime v${manifest.runtimeVersion} is ready`, pct: 100 });
+    progress({ stage: "done", message: `Pi 运行时 v${manifest.runtimeVersion} 已就绪`, pct: 100 });
     return target;
   }
 
@@ -290,23 +290,23 @@ export async function installRuntimePackage(manifest: RuntimeManifest, onProgres
   try {
     rmSafe(staging);
     mkdirSync(extracted, { recursive: true });
-    progress({ stage: "checking", message: `Preparing embedded Pi runtime v${manifest.runtimeVersion}` });
+    progress({ stage: "checking", message: `正在准备内置 Pi 运行时 v${manifest.runtimeVersion}` });
     copyFileSync(embeddedArchive, archive);
     const actualSize = statSync(archive).size;
     if (actualSize !== manifest.size) throw new Error(`runtime package size mismatch: expected ${manifest.size}, got ${actualSize}`);
     const actualHash = await sha512File(archive);
     if (actualHash !== manifest.sha512) throw new Error("runtime package integrity check failed");
 
-    progress({ stage: "installing", message: "Extracting embedded Pi runtime", pct: 0 });
+    progress({ stage: "installing", message: "正在解压内置 Pi 运行时", pct: 0 });
     await runCommand(tarBinary(), ["-xzf", archive, "-C", extracted]);
     const root = archiveRoot(extracted);
     mkdirSync(runtimeVersionsDir(), { recursive: true });
     rmSafe(target);
     renameSync(root, target);
     if (!isUsableRuntimeRoot(target)) throw new Error("runtime package activation produced an incomplete directory");
-    progress({ stage: "activating", message: `Activating Pi runtime v${manifest.runtimeVersion}` });
+    progress({ stage: "activating", message: `正在激活 Pi 运行时 v${manifest.runtimeVersion}` });
     activateRuntimeRoot(target, manifest.runtimeVersion);
-    progress({ stage: "done", message: `Pi runtime v${manifest.runtimeVersion} is ready`, pct: 100 });
+    progress({ stage: "done", message: `Pi 运行时 v${manifest.runtimeVersion} 已就绪`, pct: 100 });
     return target;
   } finally {
     rmSafe(staging);

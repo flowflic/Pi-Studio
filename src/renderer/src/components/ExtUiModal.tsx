@@ -27,6 +27,7 @@ function Dialog({
 }) {
   const [text, setText] = useState(req.prefill || "");
   const method = req.method;
+  const language = useStore((s) => s.config?.language || "en");
 
   // auto-resolve on timeout to mirror pi's own behaviour
   useEffect(() => {
@@ -42,7 +43,7 @@ function Dialog({
   return (
     <div className="modal-backdrop" onMouseDown={cancel}>
       <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="modal-title">{req.title || "Pi extension"}</div>
+        <div className="modal-title">{req.title || (language === "zh" ? "Pi 扩展" : "Pi extension")}</div>
         {req.message && <div className="modal-msg">{req.message}</div>}
 
         {method === "select" && (
@@ -58,10 +59,10 @@ function Dialog({
         {method === "confirm" && (
           <div className="modal-actions">
             <button className="btn" onClick={() => respond(threadId, req.id, { confirmed: false })}>
-              No
+              {language === "zh" ? "否" : "No"}
             </button>
             <button className="btn primary" onClick={() => respond(threadId, req.id, { confirmed: true })}>
-              Yes
+              {language === "zh" ? "是" : "Yes"}
             </button>
           </div>
         )}
@@ -81,10 +82,10 @@ function Dialog({
             />
             <div className="modal-actions">
               <button className="btn" onClick={cancel}>
-                Cancel
+                {language === "zh" ? "取消" : "Cancel"}
               </button>
               <button className="btn primary" onClick={() => respond(threadId, req.id, { value: text })}>
-                OK
+                {language === "zh" ? "确定" : "OK"}
               </button>
             </div>
           </>
@@ -103,10 +104,10 @@ function Dialog({
             />
             <div className="modal-actions">
               <button className="btn" onClick={cancel}>
-                Cancel
+                {language === "zh" ? "取消" : "Cancel"}
               </button>
               <button className="btn primary" onClick={() => respond(threadId, req.id, { value: text })}>
-                Save
+                {language === "zh" ? "保存" : "Save"}
               </button>
             </div>
           </>

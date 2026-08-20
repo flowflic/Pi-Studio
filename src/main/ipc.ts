@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
@@ -10,6 +11,7 @@ import {
   DEFAULT_REMOTE_SIGNALING_URL,
   getConfig,
   getConfigDir,
+  reloadConfig,
   updateConfig,
   type AutomationTask,
 } from "./config";
@@ -29,7 +31,7 @@ import {
 import { PiBridge, isAppManagedRuntime, resetPiRuntime, resolvePiRuntime, runtimeKind } from "./pi-bridge";
 import { createGateModeFile, ensureGateExtension, removeGateModeFile, writeGateMode } from "./permission-gate";
 import { readPreview, readRemotePreview } from "./preview-service";
-import { getAgentDir, getTotalUsage, type ProjectSummary, readThreadHistory, scanProjects, searchThreads, type ThreadSearchHit } from "./session-store";
+import { getAgentDir, getSessionsDir, getTotalUsage, type ProjectSummary, readThreadHistory, scanProjects, searchThreads, type ThreadSearchHit } from "./session-store";
 import {
   getAdditionalSkillPaths,
   getSkillCommands,
@@ -43,7 +45,7 @@ import {
   setSkillEnabled,
 } from "./plugins";
 import { getSkillDetails, getSkillsHubLeaderboard, installSkillFromHub, searchSkillsHub } from "./skills-hub";
-import { runTaskNow, startScheduler } from "./automation";
+import { removeAutomationTask, runTaskNow, startScheduler } from "./automation";
 import { loadOrCreateIdentity, opaqueId } from "./remote/identity";
 import { RemoteHost } from "./remote/host";
 import { FilePreviewService, ProjectService, RemoteEventHub, ThreadService } from "./remote/services";
@@ -116,6 +118,67 @@ const TEXT_ATTACH_EXTS = new Set([
 interface Attachment {
   abs: string;
   name: string;
+}
+
+function sameSessionFile(left: string, right: string): boolean {
+  if (!left || !right) return false;
+  try {
+    const a = resolve(left);
+    const b = resolve(right);
+    return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  } catch {
+    return left === right;
+  }
+}
+
+/** Only the session store may be permanently modified from the delete action. */
+function assertDeletableSessionFile(file: string): string {
+  const requested = file.trim();
+  if (!requested || !isAbsolute(requested) || extname(requested).toLowerCase() !== ".jsonl") {
+    throw new Error("A session JSONL path is required");
+  }
+
+  let storeRoot: string;
+  let target: string;
+  try {
+    storeRoot = realpathSync(resolve(getSessionsDir()));
+    target = resolve(requested);
+  } catch {
+    throw new Error("Thread session file not found");
+  }
+
+  const assertInsideStore = (candidate: string) => {
+    const rel = relative(storeRoot, candidate);
+    if (!rel || isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`)) {
+      throw new Error("Thread session path is outside the session store");
+    }
+  };
+
+  assertInsideStore(target);
+  if (!existsSync(target) || !statSync(target).isFile()) throw new Error("Thread session file not found");
+
+  // Resolve symlinks before deleting so a link inside the session store cannot
+  // redirect the destructive operation elsewhere.
+  const realTarget = realpathSync(target);
+  assertInsideStore(realTarget);
+  if (extname(realTarget).toLowerCase() !== ".jsonl") throw new Error("Only JSONL session files can be deleted");
+  return realTarget;
+}
+
+async function unlinkSessionWithRetry(file: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await unlink(file);
+      return;
+    } catch (error: any) {
+      if (error?.code === "ENOENT") return;
+      lastError = error;
+      if (!["EPERM", "EBUSY", "EACCES"].includes(error?.code) || attempt === 4) throw error;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 100 * (attempt + 1)));
+    }
+  }
+  throw lastError || new Error("Could not delete thread session file");
 }
 
 function processAttachments(attachments: Attachment[] | undefined, text: string): { text: string; images: unknown[] } {
@@ -240,7 +303,7 @@ function createHandle(
         systemNotifications?.notifySandboxApproval(
           id,
           getConfig().language === "zh" ? "zh" : "en",
-          sandboxOperationFromTitle((r as any)?.title),
+          sandboxOperationFromTitle((r as any)?.title, getConfig().language === "zh" ? "zh" : "en"),
         );
       }
     },
@@ -1602,7 +1665,13 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
         : kind === "files"
           ? ["openFile", "multiSelections"]
           : ["openFile"];
-    const res = await dialog.showOpenDialog(w!, { properties, title: kind === "folder" ? "Open project folder" : "Attach files" });
+    const language = getConfig().language;
+    const res = await dialog.showOpenDialog(w!, {
+      properties,
+      title: kind === "folder"
+        ? language === "zh" ? "打开项目文件夹" : "Open project folder"
+        : language === "zh" ? "添加文件" : "Attach files",
+    });
     if (res.canceled) return null;
     return kind === "folder" ? res.filePaths[0] : res.filePaths;
   });
@@ -1819,6 +1888,41 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
       writeGateMode(h.gateModeFile, args.permission);
     }
     return { ok: true };
+  });
+
+  ipcMain.handle("thread:delete", async (_e, file: string) => {
+    const target = assertDeletableSessionFile(typeof file === "string" ? file : "");
+
+    // Stop every local bridge that points at this session before unlinking it;
+    // otherwise a live Pi process can recreate or continue writing the file.
+    for (const [id, handle] of Array.from(bridges.entries())) {
+      if (!sameSessionFile(id, target) && !sameSessionFile(handle.getId(), target)) continue;
+      bridges.delete(id);
+      handle.bridge.stop();
+    }
+    if (warmHandle && sameSessionFile(warmHandle.getId(), target)) dropWarmBridge();
+
+    await unlinkSessionWithRetry(target);
+
+    const current = getConfig();
+    const threadPermissions = Object.fromEntries(
+      Object.entries(current.threadPermissions || {}).filter(([path]) => !sameSessionFile(path, target)),
+    );
+    const config = updateConfig({
+      pinnedThreads: (current.pinnedThreads || []).filter((path) => !sameSessionFile(path, target)),
+      archivedThreads: (current.archivedThreads || []).filter((thread) => !sameSessionFile(thread.file, target)),
+      threadPermissions,
+    });
+
+    for (const [localId] of Array.from(remoteLocalToId.entries())) {
+      if (sameSessionFile(localId, target)) remoteLocalToId.delete(localId);
+    }
+    for (const [remoteId, draft] of Array.from(remoteDrafts.entries())) {
+      if (draft.sessionFile && sameSessionFile(draft.sessionFile, target)) remoteDrafts.delete(remoteId);
+    }
+    invalidateRemoteProjects();
+    send("pi:projects-changed", { sessionFile: target });
+    return { ok: true, config };
   });
 
   ipcMain.handle("thread:close", (_e, threadId: string) => {
@@ -2051,16 +2155,16 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   });
 
   // ---- automation (scheduled tasks) --------------------------------------
-  ipcMain.handle("automation:getTasks", () => getConfig().automationTasks);
+  ipcMain.handle("automation:getTasks", () => reloadConfig().automationTasks);
   ipcMain.handle("automation:saveTask", (_e, task: AutomationTask) => {
-    const tasks = getConfig().automationTasks;
+    const tasks = reloadConfig().automationTasks;
     const idx = tasks.findIndex((t) => t.id === task.id);
     const next = idx >= 0 ? tasks.map((t) => (t.id === task.id ? { ...t, ...task } : t)) : [...tasks, task];
     updateConfig({ automationTasks: next });
     return { ok: true };
   });
   ipcMain.handle("automation:deleteTask", (_e, id: string) => {
-    updateConfig({ automationTasks: getConfig().automationTasks.filter((t) => t.id !== id) });
+    removeAutomationTask(typeof id === "string" ? id : "");
     return { ok: true };
   });
   ipcMain.handle("automation:runNow", async (_e, id: string) => {
@@ -2140,7 +2244,15 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     if (w.isMaximized()) w.unmaximize();
     else w.maximize();
   });
-  ipcMain.handle("window:close", () => getWin()?.close());
+  ipcMain.handle("window:close", () => {
+    const w = getWin();
+    if (!w || w.isDestroyed()) return false;
+    // The custom title-bar close button is a hide-to-tray action. The native
+    // BrowserWindow close listener below still covers Alt+F4 and other native
+    // close paths.
+    w.hide();
+    return true;
+  });
   ipcMain.handle("window:isMaximized", () => !!getWin()?.isMaximized());
 
   // ---- background scheduler ----------------------------------------------

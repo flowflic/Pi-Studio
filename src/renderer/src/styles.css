@@ -422,7 +422,8 @@ body.sidebar-resizing * {
   white-space: nowrap;
   min-width: 0;
 }
-.thread-archive-btn {
+.thread-archive-btn,
+.thread-delete-btn {
   display: grid;
   place-items: center;
   flex: 0 0 22px;
@@ -440,14 +441,22 @@ body.sidebar-resizing * {
 }
 .thread:hover .thread-archive-btn,
 .thread:focus-within .thread-archive-btn,
-.thread.active .thread-archive-btn {
+.thread.active .thread-archive-btn,
+.thread:hover .thread-delete-btn,
+.thread:focus-within .thread-delete-btn,
+.thread.active .thread-delete-btn {
   opacity: 1;
 }
 .thread-archive-btn:hover {
   background: rgba(0, 0, 0, 0.08);
   color: var(--text);
 }
-.thread-archive-btn:focus-visible {
+.thread-delete-btn:hover {
+  background: #fbe9e7;
+  color: #b23a2c;
+}
+.thread-archive-btn:focus-visible,
+.thread-delete-btn:focus-visible {
   opacity: 1;
   outline: 2px solid var(--accent);
   outline-offset: 1px;
@@ -1814,6 +1823,12 @@ body.sidebar-resizing * {
 .project-context-menu button:hover {
   background: #f1f1ed;
 }
+.project-context-menu button.danger {
+  color: #b23a2c;
+}
+.project-context-menu button.danger:hover {
+  background: #fbe9e7;
+}
 .project-context-menu button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
@@ -3138,6 +3153,24 @@ textarea.modal-input {
 }
 .btn.primary:hover {
   background: var(--send-hover);
+}
+.btn.danger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #b23a2c;
+  color: #fff;
+  border-color: #b23a2c;
+}
+.btn.danger:hover {
+  background: #922d24;
+  border-color: #922d24;
+}
+.thread-delete-backdrop {
+  z-index: 220;
+}
+.thread-delete-confirm {
+  width: min(460px, 92vw);
 }
 
 /* ---------- toasts ---------- */
@@ -5354,6 +5387,18 @@ mark.hl {
 :root[data-theme="dark"] .set-btn.primary:hover:not(:disabled),
 :root[data-theme="dark"] .btn.primary:hover {
   background: var(--send-hover);
+}
+:root[data-theme="dark"] .btn.danger {
+  background: #a84439;
+  border-color: #a84439;
+  color: #fff;
+}
+:root[data-theme="dark"] .btn.danger:hover,
+:root[data-theme="dark"] .thread-delete-btn:hover,
+:root[data-theme="dark"] .project-context-menu button.danger:hover {
+  background: #71352f;
+  border-color: #71352f;
+  color: #ffd8d2;
 }
 :root[data-theme="dark"] .set-btn.primary .set-dot {
   background: #102015;

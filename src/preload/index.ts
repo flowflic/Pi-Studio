@@ -83,6 +83,7 @@ const api = {
     open: (args: { cwd: string; sessionFile?: string; name?: string; permission?: "sandbox" | "full" }) => ipcRenderer.invoke("thread:open", args),
     loadHistory: (args: { cwd: string; sessionFile: string }) => ipcRenderer.invoke("thread:loadHistory", args),
     close: (threadId: string) => ipcRenderer.invoke("thread:close", threadId),
+    delete: (file: string) => ipcRenderer.invoke("thread:delete", file),
     prompt: (args: { threadId: string; text: string; images?: unknown[]; attachments?: { abs: string; name: string }[] }) =>
       ipcRenderer.invoke("thread:prompt", args),
     steer: (args: { threadId: string; text: string; images?: unknown[]; attachments?: { abs: string; name: string }[] }) =>

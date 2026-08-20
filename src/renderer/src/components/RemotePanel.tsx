@@ -132,11 +132,11 @@ export function RemotePanel({ language }: { language: "en" | "zh" }) {
         <div className="set-card-title">{zh ? "Android 手机远程控制" : "Android remote companion"}</div>
         <div className="set-hint">
           {zh
-            ? "使用 WSS 信令和 STUN 直连 WebRTC。信令服务不会接收 prompt、代码、对话或文件；TURN/relay 候选会被拒绝。"
+             ? "使用 WSS 信令和 STUN 直连 WebRTC。信令服务不会接收提示词、代码、对话或文件；TURN/relay 候选会被拒绝。"
             : "Uses WSS signaling and direct STUN WebRTC only. Signaling never receives prompts, code, conversations, or files; TURN/relay candidates are rejected."}
         </div>
         <div className="set-remote-status" aria-live="polite">
-          <span className="set-diag-k">{zh ? "Signal 连接状态" : "Signal connection"}</span>
+          <span className="set-diag-k">{zh ? "信令连接状态" : "Signal connection"}</span>
           <span className={`set-remote-status-value ${statusClass(state)}`}>
             <span className="set-remote-status-dot" aria-hidden="true" />
             {statusLabel(state, zh)}
@@ -145,9 +145,9 @@ export function RemotePanel({ language }: { language: "en" | "zh" }) {
       </div>
 
       <div className="set-card">
-        <div className="set-card-title">{zh ? "Signal 配置" : "Signal settings"}</div>
+        <div className="set-card-title">{zh ? "信令配置" : "Signal settings"}</div>
         <label className="set-addprov-field wide">
-          <span>{zh ? "Signal URL（WSS）" : "Signal URL (WSS)"}</span>
+           <span>{zh ? "信令地址（WSS）" : "Signal URL (WSS)"}</span>
           <input
             className="set-input"
             value={signalingUrl}
@@ -161,12 +161,12 @@ export function RemotePanel({ language }: { language: "en" | "zh" }) {
         </button>
         <div className="set-hint" style={{ marginTop: 10 }}>
           {zh
-            ? "手动开启后 Signal 会保持连接；配对或重连流程临时开启的 Signal 会在直连认证完成后自动关闭。"
+             ? "手动开启后信令会保持连接；配对或重连流程临时开启的信令会在直连认证完成后自动关闭。"
             : "Signal stays connected when enabled manually; pairing or reconnect flows close it after direct authentication."}
         </div>
         <div className="set-remote-toggle-row">
           <div className="set-remote-toggle-copy">
-            <span className="set-remote-toggle-label">{zh ? "启用 Signal" : "Enable Signal"}</span>
+            <span className="set-remote-toggle-label">{zh ? "启用信令" : "Enable Signal"}</span>
             <span className="set-remote-toggle-state">
               {status?.signalingEnabled ? (zh ? "已启用" : "On") : (zh ? "已关闭" : "Off")}
             </span>
@@ -176,7 +176,7 @@ export function RemotePanel({ language }: { language: "en" | "zh" }) {
             className={`set-toggle ${status?.signalingEnabled ? "on" : ""}`}
             role="switch"
             aria-checked={!!status?.signalingEnabled}
-            aria-label={zh ? "切换 Signal" : "Toggle Signal"}
+             aria-label={zh ? "切换信令" : "Toggle Signal"}
             onClick={() => void toggleRemote()}
             disabled={busy || !signalingUrl.trim()}
           >
@@ -199,7 +199,7 @@ export function RemotePanel({ language }: { language: "en" | "zh" }) {
           <div className="set-remote-pairing">
             {qr && <img src={qr} alt={zh ? "手机配对二维码" : "Phone pairing QR code"} width={260} height={260} />}
             <div className="set-hint">
-              {zh ? "无法扫码时，可将下面的链接粘贴到 Android App。" : "If scanning is unavailable, paste this link into the Android app."}
+            {zh ? "无法扫码时，可将下面的链接粘贴到 Android 应用。" : "If scanning is unavailable, paste this link into the Android app."}
             </div>
             <textarea className="set-input" rows={4} readOnly value={pairingUri(pairing)} />
             <div className="set-hint">{zh ? `指纹：${pairing.fingerprint}` : `Fingerprint: ${pairing.fingerprint}`}</div>

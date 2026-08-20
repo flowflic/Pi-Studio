@@ -235,7 +235,7 @@ export function Composer({ threadId }: { threadId: string }) {
     const mapped = model?.thinkingLevelMap?.[level];
     return mapped && mapped !== level ? mapped : null;
   };
-  const projectName = cwd.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || cwd || "No project";
+  const projectName = cwd.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || cwd || (language === "zh" ? "暂无项目" : "No project");
   const visibleProjects = projects.filter((project) => {
     const query = projectQuery.trim().toLowerCase();
     return !query || project.name.toLowerCase().includes(query) || project.cwd.toLowerCase().includes(query);
@@ -361,13 +361,23 @@ export function Composer({ threadId }: { threadId: string }) {
           </div>
         )}
         {slashMenuOpen && (
-          <div className="slash-menu" role="listbox" aria-label="Slash commands">
-            <div className="slash-menu-head">Commands, plugins &amp; skills</div>
+          <div className="slash-menu" role="listbox" aria-label={language === "zh" ? "斜杠命令" : "Slash commands"}>
+            <div className="slash-menu-head">{language === "zh" ? "命令、插件和技能" : "Commands, plugins & skills"}</div>
             <div className="slash-menu-list">
               {slashItems.map((command: any, index: number) => {
                 const isSkill = command.source === "skill";
                 const displayName = isSkill ? String(command.name).replace(/^skill:/, "") : command.name;
-                const kind = isSkill ? "Skill" : command.source === "extension" ? "Plugin" : "Prompt";
+                const kind = language === "zh"
+                  ? isSkill
+                    ? "技能"
+                    : command.source === "extension"
+                      ? "插件"
+                      : "提示词"
+                  : isSkill
+                    ? "Skill"
+                    : command.source === "extension"
+                      ? "Plugin"
+                      : "Prompt";
                 return (
                   <button
                     key={`${command.source || "command"}:${command.name}`}
@@ -394,7 +404,7 @@ export function Composer({ threadId }: { threadId: string }) {
             {images.map((im) => (
               <div key={im.id} className="attach-chip">
                 <img src={im.dataUrl} alt="" />
-                <span className="nm">image</span>
+                <span className="nm">{language === "zh" ? "图像" : "image"}</span>
                 <button className="rm" onClick={() => setImages((p) => p.filter((x) => x.id !== im.id))}>
                   ×
                 </button>
@@ -419,7 +429,7 @@ export function Composer({ threadId }: { threadId: string }) {
             <div className="pf-main">
               <div className="pf-label">
                 <span className="pf-dot" />
-                待处理 follow-up
+                {language === "zh" ? "待处理后续" : "Pending follow-up"}
                 <span className="pf-sub">· 当前任务完成后自动发送</span>
               </div>
               <div className="pf-text">{pending.text || `${pending.images.length + pending.files.length} 个附件`}</div>
@@ -428,7 +438,7 @@ export function Composer({ threadId }: { threadId: string }) {
               <button className="pf-btn" title="重新编辑" onClick={reEditPending}>
                 <Edit size={14} />
               </button>
-              <button className="pf-btn steer" title="立即 steering（尽快插入上下文执行）" onClick={() => sendPendingSteering(threadId)}>
+              <button className="pf-btn steer" title={language === "zh" ? "立即插入上下文执行" : "Steer now (insert into context as soon as possible)"} onClick={() => sendPendingSteering(threadId)}>
                 <Zap size={14} />
               </button>
             </div>
@@ -439,7 +449,13 @@ export function Composer({ threadId }: { threadId: string }) {
           <textarea
             ref={taRef}
             rows={1}
-            placeholder={isStreaming ? "输入插话… Enter 存为待处理 follow-up（完成后发送），Alt+Enter 立即 steering（中断当前）" : "随心输入  ·  粘贴/拖拽图片  ·  + 添加文件"}
+            placeholder={isStreaming
+              ? language === "zh"
+                 ? "输入插话…回车键存为待处理后续（完成后发送），Alt+回车立即插入（中断当前）"
+                : "Type a message… Enter queues a follow-up; Alt+Enter steers immediately"
+              : language === "zh"
+                ? "随心输入  ·  粘贴/拖拽图片  ·  + 添加文件"
+                : "Type a message · Paste or drop images · + Add files"}
             value={text}
             onChange={(e) => {
               setText(e.target.value);
@@ -452,16 +468,18 @@ export function Composer({ threadId }: { threadId: string }) {
 
         <div className="composer-bar">
           <div className="cb-left">
-            <button className="iconbtn" title="Add files" onClick={addFiles}>
+            <button className="iconbtn" title={language === "zh" ? "添加文件" : "Add files"} onClick={addFiles}>
               <Plus size={17} />
             </button>
             <div className="pill perm-pill composer-optional-action" ref={permRef}>
               <button
                 className={`pill-btn perm-btn ${permission === "full" ? "perm-full" : ""}`}
-                title="权限级别：sandbox 仅自动放行明确只读的 shell 命令，并限制项目外写入；完全权限为 pi 默认 unrestricted 模式"
+                title={language === "zh"
+                  ? "权限级别：沙盒仅自动放行明确只读的命令行操作，并限制项目外写入；完全权限为 pi 默认无限制模式"
+                  : "Permission level: sandbox auto-allows clearly read-only shell commands and restricts writes outside the project; full access uses Pi's unrestricted mode"}
                 onClick={() => setPermOpen((v) => !v)}
               >
-                <Shield size={13} /> {permission === "full" ? "完全权限" : "sandbox"} ▾
+                <Shield size={13} /> {permission === "full" ? (language === "zh" ? "完全权限" : "Full access") : language === "zh" ? "沙盒" : "Sandbox"} ▾
               </button>
               {permOpen && (
                 <div className="pill-pop perm-pop">
@@ -471,9 +489,9 @@ export function Composer({ threadId }: { threadId: string }) {
                       setPermOpen(false);
                       setPermission(threadId, "sandbox");
                     }}
-                  >
-                    <span className="o1">sandbox</span>
-                    <span className="o2">敏感命令执行前需确认（默认）</span>
+                >
+                    <span className="o1">{language === "zh" ? "沙盒" : "Sandbox"}</span>
+                    <span className="o2">{language === "zh" ? "敏感命令执行前需确认（默认）" : "Confirm sensitive commands before execution (default)"}</span>
                   </button>
                   <button
                     className={`opt ${permission === "full" ? "active" : ""}`}
@@ -489,7 +507,7 @@ export function Composer({ threadId }: { threadId: string }) {
               )}
             </div>
             <div className="pill composer-optional-action" ref={cmdRef}>
-              <button className="pill-btn" title="Slash commands / skills" onClick={toggleCommands}>
+              <button className="pill-btn" title={language === "zh" ? "斜杠命令 / 技能" : "Slash commands / skills"} onClick={toggleCommands}>
                 <At size={14} /> 命令
               </button>
               {cmdOpen && (
@@ -500,8 +518,8 @@ export function Composer({ threadId }: { threadId: string }) {
                       autoFocus
                       value={commandQuery}
                       onChange={(event) => setCommandQuery(event.target.value)}
-                      placeholder="搜索命令、插件或 skill"
-                      aria-label="搜索命令、插件或 skill"
+                      placeholder={language === "zh" ? "搜索命令、插件或技能" : "Search commands, plugins, or skills"}
+                      aria-label={language === "zh" ? "搜索命令、插件或技能" : "Search commands, plugins, or skills"}
                     />
                   </label>
                   <div className="command-list">
@@ -538,7 +556,7 @@ export function Composer({ threadId }: { threadId: string }) {
               {modelOpen && (
                 <div className="pill-pop model-pop">
                   <div className="pop-head">模型</div>
-                  {modelList.length === 0 && <div className="ft-empty">无可用模型（检查 auth）</div>}
+                  {modelList.length === 0 && <div className="ft-empty">{language === "zh" ? "无可用模型（请检查认证）" : "No models available (check auth)"}</div>}
                   {modelGroups.map((group) => {
                     const expanded = expandedProviders[group.provider] === true;
                     const active = model?.provider === group.provider;
@@ -609,18 +627,18 @@ export function Composer({ threadId }: { threadId: string }) {
               <>
                 <button
                   className="send-btn"
-                  title="存为待处理 follow-up（Enter）；Alt+Enter 立即 steering"
+                  title={language === "zh" ? "存为待处理后续（回车）；Alt+回车立即插入" : "Queue as follow-up (Enter); Alt+Enter steers immediately"}
                   onClick={() => queuePending()}
                   disabled={!text.trim() && !images.length && !files.length}
                 >
                   <Send size={15} />
                 </button>
-                <button className="send-btn stop" title="Stop" onClick={() => abortThread(threadId)}>
+                <button className="send-btn stop" title={language === "zh" ? "停止" : "Stop"} onClick={() => abortThread(threadId)}>
                   <Stop size={14} />
                 </button>
               </>
             ) : (
-              <button className="send-btn" title="Send" onClick={() => send()} disabled={!text.trim() && !images.length && !files.length}>
+              <button className="send-btn" title={language === "zh" ? "发送" : "Send"} onClick={() => send()} disabled={!text.trim() && !images.length && !files.length}>
                 <Send size={15} />
               </button>
             )}

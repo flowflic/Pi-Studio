@@ -189,7 +189,7 @@ function mergeLiveThreadsIntoProjects(
     project.threads.unshift({
       file,
       id: file,
-      title: getDisplayThreadTitle(thread.sessionName, firstText, language).slice(0, 80) || "New Thread",
+      title: getDisplayThreadTitle(thread.sessionName, firstText, language).slice(0, 80) || (language === "zh" ? "新线程" : "New Thread"),
       preview: firstText.slice(0, 120) || (firstUser.images?.length ? "图片消息" : ""),
       updatedAt: lastUser.timestamp || Date.now(),
       messageCount: thread.messages.filter((message) => message.role === "user" || message.role === "assistant").length,
@@ -953,6 +953,7 @@ interface PiStore {
   archiveProject: (cwd: string) => Promise<void>;
   restoreProject: (cwd: string) => Promise<void>;
   archiveThread: (cwd: string, file: string, title?: string) => Promise<void>;
+  deleteThread: (cwd: string, file: string, title?: string) => Promise<void>;
   restoreThread: (file: string) => Promise<void>;
   toggleProject: (cwd: string) => void;
   setActiveProject: (cwd: string) => void;
@@ -1364,6 +1365,25 @@ export const useStore = create<PiStore>()((set, get) => ({
       get().pushToast("info", "线程已归档，可在设置的“归档线程”中恢复。");
     } catch (e: any) {
       get().pushToast("error", "归档线程失败：" + (e?.message || e));
+    }
+  },
+  deleteThread: async (_cwd, file, _title) => {
+    try {
+      if (!file || file.startsWith("opening-") || file.startsWith("boot:")) return;
+      const result = await window.pi.thread.delete(file);
+      if (result?.config) set({ config: result.config });
+
+      // The main process stops the bridge before removing the JSONL. Remove
+      // every renderer view that points at the same persisted session too.
+      const target = normalizeThreadFile(file);
+      const ids = Object.entries(get().threads)
+        .filter(([id, thread]) => normalizeThreadFile(thread.sessionFile || id) === target)
+        .map(([id]) => id);
+      for (const id of ids) await get().closeThread(id);
+      await get().refreshProjects();
+      get().pushToast("success", "线程已永久删除，无法恢复。");
+    } catch (e: any) {
+      get().pushToast("error", "永久删除线程失败：" + (e?.message || e));
     }
   },
   restoreThread: async (file) => {
@@ -1814,8 +1834,9 @@ export const useStore = create<PiStore>()((set, get) => ({
     const liveId = await get().ensureConnected(id);
     if (!liveId) return;
     const source = get().threads[liveId];
+    const zh = get().config?.language === "zh";
     if (!source || source.isStreaming) {
-      get().pushToast("warning", "请等待当前回复结束后再 Fork。");
+      get().pushToast("warning", zh ? "请等待当前回复结束后再创建分支。" : "Wait for the current reply to finish before forking.");
       return;
     }
     try {
@@ -1833,7 +1854,7 @@ export const useStore = create<PiStore>()((set, get) => ({
           newId === liveId || s.openThreadIds.includes(newId) ? s.openThreadIds : [...s.openThreadIds, newId];
         return { threads, openThreadIds, activeThreadId: newId, activeProjectCwd: next.cwd };
       });
-      get().pushToast("info", "已从所选 Agent 回复创建 Fork。");
+      get().pushToast("info", zh ? "已从所选智能体回复创建分支。" : "Created a fork from the selected Agent reply.");
       get().refreshProjects();
     } catch (e: any) {
       get().pushToast("error", e?.message || "fork failed");
@@ -1844,8 +1865,9 @@ export const useStore = create<PiStore>()((set, get) => ({
     const liveId = await get().ensureConnected(id);
     if (!liveId) return;
     const source = get().threads[liveId];
+    const zh = get().config?.language === "zh";
     if (!source || source.isStreaming) {
-      get().pushToast("warning", "请等待当前回复结束后再 Clone。");
+      get().pushToast("warning", zh ? "请等待当前回复结束后再克隆。" : "Wait for the current reply to finish before cloning.");
       return;
     }
     try {
@@ -1863,7 +1885,7 @@ export const useStore = create<PiStore>()((set, get) => ({
           newId === liveId || s.openThreadIds.includes(newId) ? s.openThreadIds : [...s.openThreadIds, newId];
         return { threads, openThreadIds, activeThreadId: newId, activeProjectCwd: next.cwd };
       });
-      get().pushToast("info", "已 Clone 截至所选 Agent 回复的分支。");
+      get().pushToast("info", zh ? "已克隆截至所选智能体回复的分支。" : "Cloned the branch through the selected Agent reply.");
       get().refreshProjects();
     } catch (e: any) {
       get().pushToast("error", e?.message || "clone failed");
@@ -1940,7 +1962,11 @@ export const useStore = create<PiStore>()((set, get) => ({
 
   pushToast: (kind, text) => {
     const id = uid();
-    set((s) => ({ toasts: [...s.toasts, { id, kind, text }] }));
+    set((s) => ({
+      // Keep the source copy so a toast created before config bootstrap is
+      // re-rendered in the selected language once the config arrives.
+      toasts: [...s.toasts, { id, kind, text: String(text) }],
+    }));
     setTimeout(() => get().dismissToast(id), 5200);
   },
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
@@ -2137,14 +2163,14 @@ export const useStore = create<PiStore>()((set, get) => ({
     try {
       const result: any = await window.pi.plugins.installSkill({ source: skill.source, skillId: skill.skillId });
       if (!result?.ok) {
-        get().pushToast("error", `${zh ? "安装 skill 失败：" : "Skill installation failed: "}${String(result?.output || (zh ? "未知错误" : "Unknown error")).slice(-500)}`);
+        get().pushToast("error", `${zh ? "安装技能失败：" : "Skill installation failed: "}${String(result?.output || (zh ? "未知错误" : "Unknown error")).slice(-500)}`);
         return false;
       }
-      get().pushToast("success", `${zh ? "Skill 已安装：" : "Skill installed: "}${skill.name}`);
+      get().pushToast("success", `${zh ? "技能已安装：" : "Skill installed: "}${skill.name}`);
       await get().loadPlugins();
       return true;
     } catch (e: any) {
-      get().pushToast("error", `${zh ? "安装 skill 失败：" : "Skill installation failed: "}${e?.message || e}`);
+      get().pushToast("error", `${zh ? "安装技能失败：" : "Skill installation failed: "}${e?.message || e}`);
       return false;
     }
   },
@@ -2201,7 +2227,10 @@ export const useStore = create<PiStore>()((set, get) => ({
       // The gate extension is always loaded; switching just flips its live mode
       // file, so the pi process and session keep running uninterrupted.
       await window.pi.thread.setPermission({ threadId, permission: level });
-      get().pushToast("info", level === "sandbox" ? "已切换到 sandbox（非只读命令及项目外写入需确认）。" : "已切换到完全权限。");
+      const zh = get().config?.language === "zh";
+      get().pushToast("info", level === "sandbox"
+        ? zh ? "已切换到沙盒（非只读命令及项目外写入需确认）。" : "Switched to sandbox. Non-read-only commands and writes outside the project require confirmation."
+        : zh ? "已切换到完全权限。" : "Switched to full access.");
     } catch (e: any) {
       get().pushToast("error", "切换权限失败：" + (e?.message || e));
     }

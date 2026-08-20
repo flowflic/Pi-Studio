@@ -38,6 +38,12 @@ export const Archive = (p: P) => (
     <path d="M3 4h18v4H3zM9 12h6" />
   </svg>
 );
+export const Trash = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M4 7h16M10 11v5M14 11v5" />
+    <path d="M6 7l1 13h10l1-13M9 7V4h6v3" />
+  </svg>
+);
 export const Star = (p: P) => (
   <svg {...base(p)}>
     <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z" />

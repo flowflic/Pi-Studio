@@ -89,7 +89,7 @@ export default function App() {
                 </div>
                 <h2>Pi Studio</h2>
                 <p style={{ maxWidth: 420, margin: "0 auto 16px" }}>
-                  终端 pi 的 Windows 桌面端：完整继承模型、harness 与插件系统。左侧选择项目与线程，右侧预览文件。
+                  终端 pi 的 Windows 桌面端：完整继承模型、运行框架与插件系统。左侧选择项目与线程，右侧预览文件。
                 </p>
                 {!runtime?.ok && runtime && <p style={{ color: "#b23a2c" }}>未检测到 pi：{runtime.error}</p>}
                 <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
@@ -119,7 +119,7 @@ export default function App() {
             <section className="set-main" style={{ width: "min(900px, 94vw)" }}>
               <header className="set-head">
                 <h2>{language === "zh" ? "Android 手机远程控制" : "Android remote companion"}</h2>
-                <button className="set-iconbtn" onClick={() => setRemoteOpen(false)} aria-label="Close remote settings">×</button>
+                <button className="set-iconbtn" onClick={() => setRemoteOpen(false)} aria-label={language === "zh" ? "关闭远程设置" : "Close remote settings"}>×</button>
               </header>
               <div className="set-body">
                 <RemotePanel language={language} />

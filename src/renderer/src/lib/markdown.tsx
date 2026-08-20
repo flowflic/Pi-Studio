@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { CODE_LANGUAGE_ALIASES, CODE_LANGUAGE_NAMES, CODE_LANGUAGES } from "./code-languages";
+import { useStore } from "../store";
 
 function extractText(node: ReactNode): string {
   if (node == null || typeof node === "boolean") return "";
@@ -14,6 +15,7 @@ function extractText(node: ReactNode): string {
 
 function CodeBlock({ className, children }: { className?: string; children: ReactNode }) {
   const [copied, setCopied] = useState(false);
+  const language = useStore((s) => s.config?.language || "en");
   const lang = (className || "").match(/language-([\w-]+)/)?.[1] || "";
   const text = extractText(children);
   const copy = async () => {
@@ -29,8 +31,8 @@ function CodeBlock({ className, children }: { className?: string; children: Reac
     <div className="code-block">
       <div className="code-block-bar">
         <span className="code-block-lang">{lang || "code"}</span>
-        <button className="code-copy" onClick={copy} title="Copy">
-          {copied ? "Copied" : "Copy"}
+        <button className="code-copy" onClick={copy} title={language === "zh" ? "复制" : "Copy"}>
+          {copied ? (language === "zh" ? "已复制" : "Copied") : language === "zh" ? "复制" : "Copy"}
         </button>
       </div>
       <pre>

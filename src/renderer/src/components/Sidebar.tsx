@@ -4,7 +4,7 @@ import { localizeAutomationThreadTitle, useStore } from "../store";
 import { fileIcon, formatTokens } from "../lib/format";
 import { useOutsideClose } from "../lib/useOutsideClose";
 import type { FileNode } from "../lib/types";
-import { Plus, Folder, Archive, Star, ChevronRight, Edit, Clock, At, Search, Settings, Help, Refresh, Gauge, Smartphone, Sidebar as SidebarIcon } from "./icons";
+import { Plus, Folder, Archive, Trash, Star, ChevronRight, Edit, Clock, At, Search, Settings, Help, Refresh, Gauge, Smartphone, Sidebar as SidebarIcon } from "./icons";
 
 const treeKey = (cwd: string, rel?: string) => `${cwd}::${rel || ""}`;
 const SIDEBAR_WIDTH_KEY = "pi-studio.sidebar-width";
@@ -46,7 +46,8 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
   const [usageData, setUsageData] = useState<any>(null);
   const [usageLoading, setUsageLoading] = useState(false);
   const [projectMenu, setProjectMenu] = useState<{ cwd: string; name: string; pinned: boolean; x: number; y: number } | null>(null);
-  const [threadMenu, setThreadMenu] = useState<{ file: string; name: string; pinned: boolean; x: number; y: number } | null>(null);
+  const [threadMenu, setThreadMenu] = useState<{ cwd: string; file: string; name: string; pinned: boolean; x: number; y: number } | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<{ cwd: string; file: string; name: string } | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(initialSidebarWidth);
   const usageRef = useRef<HTMLDivElement>(null);
   const projectMenuRef = useRef<HTMLDivElement>(null);
@@ -55,6 +56,15 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
   useOutsideClose(usageRef, usageOpen, () => setUsageOpen(false));
   useOutsideClose(projectMenuRef, !!projectMenu, () => setProjectMenu(null));
   useOutsideClose(threadMenuRef, !!threadMenu, () => setThreadMenu(null));
+
+  useEffect(() => {
+    if (!deleteConfirm) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDeleteConfirm(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [deleteConfirm]);
 
   useEffect(() => {
     const onPointerMove = (event: PointerEvent) => {
@@ -140,6 +150,7 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
   const setThreadPinned = useStore((s) => s.setThreadPinned);
   const archiveProject = useStore((s) => s.archiveProject);
   const archiveThread = useStore((s) => s.archiveThread);
+  const deleteThread = useStore((s) => s.deleteThread);
   const setSidebarTab = useStore((s) => s.setSidebarTab);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
 
@@ -156,6 +167,12 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
 
   const onThreadClick = (cwd: string, file: string) => {
     void goToThread(cwd, file);
+  };
+
+  const openDeleteConfirmation = (cwd: string, file: string, name: string) => {
+    setProjectMenu(null);
+    setThreadMenu(null);
+    setDeleteConfirm({ cwd, file, name });
   };
 
   return (
@@ -217,7 +234,7 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
           <>
             <div className="sb-section-head">
               <span>项目</span>
-              <button onClick={openProjectFolder} title="Open folder">
+              <button onClick={openProjectFolder} title={language === "zh" ? "打开文件夹" : "Open folder"}>
                 <Plus size={14} />
               </button>
             </div>
@@ -257,7 +274,7 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
                     <span className="pcount">{p.threads.length}</span>
                     <button
                       className="pact"
-                      title="New thread"
+                      title={language === "zh" ? "新线程" : "New thread"}
                       onClick={(e) => {
                         e.stopPropagation();
                         openThread(p.cwd);
@@ -297,6 +314,7 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
                               event.stopPropagation();
                               setProjectMenu(null);
                               setThreadMenu({
+                                cwd: p.cwd,
                                 file: t.file,
                                 name: title,
                                 pinned: !!t.pinned,
@@ -333,10 +351,22 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
                               >
                                 <Archive size={13} />
                               </button>
+                              <button
+                                type="button"
+                                className="thread-delete-btn"
+                                title={language === "zh" ? "永久删除线程" : "Permanently delete thread"}
+                                aria-label={`${language === "zh" ? "永久删除线程" : "Permanently delete thread"}：${title}`}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openDeleteConfirmation(p.cwd, t.file, title);
+                                }}
+                              >
+                                <Trash size={13} />
+                              </button>
                             </div>
                             {t.preview && t.preview !== t.title && <div className="thread-preview">{t.preview}</div>}
                             <div className="thread-meta">
-                              {t.messageCount} 条 · {new Date(t.updatedAt).toLocaleString([], { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                              {language === "zh" ? `${t.messageCount} 条` : `${t.messageCount} ${t.messageCount === 1 ? "message" : "messages"}`} · {new Date(t.updatedAt).toLocaleString([], { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
                             </div>
                           </div>
                         );
@@ -353,7 +383,7 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
       </div>
 
       <div className="sb-foot">
-        <button className="iconbtn" title="Settings" onClick={() => useStore.getState().openSettings()}>
+        <button className="iconbtn" title={language === "zh" ? "设置" : "Settings"} onClick={() => useStore.getState().openSettings()}>
           <Settings size={15} />
         </button>
         <span className="sb-foot-spacer" aria-hidden="true" />
@@ -366,7 +396,7 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
           <Smartphone size={15} />
         </button>
         <div className="usage-wrap" ref={usageRef}>
-          <button className={`iconbtn ${usageOpen ? "on" : ""}`} title="Pi 合计 token 用量" onClick={toggleUsage}>
+          <button className={`iconbtn ${usageOpen ? "on" : ""}`} title={language === "zh" ? "Pi 合计令牌用量" : "Total Pi token usage"} onClick={toggleUsage}>
             <Gauge size={15} />
           </button>
           {usageOpen && (
@@ -384,7 +414,7 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
               ) : usageData ? (
                 <>
                   <div className="usage-bignum">{formatTokens(usageData.tokens)}</div>
-                  <div className="usage-sub">tokens · {usageData.sessions} 个会话</div>
+                  <div className="usage-sub">{language === "zh" ? `令牌 · ${usageData.sessions} 个会话` : `Tokens · ${usageData.sessions} ${usageData.sessions === 1 ? "session" : "sessions"}`}</div>
                   {usageData.cost > 0 && <div className="usage-cost">合计 ${usageData.cost.toFixed(4)}</div>}
                 </>
               ) : (
@@ -393,7 +423,11 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
             </div>
           )}
         </div>
-        <button className="iconbtn" title="Help" onClick={() => useStore.getState().pushToast("info", "Pi Studio · inherits terminal pi")}>
+        <button
+          className="iconbtn"
+          title={language === "zh" ? "帮助" : "Help"}
+          onClick={() => useStore.getState().pushToast("info", language === "zh" ? "Pi Studio · 继承终端 pi" : "Pi Studio · inherits terminal pi")}
+        >
           <Help size={15} />
         </button>
       </div>
@@ -455,8 +489,51 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
                 : "Unpin thread"
               : language === "zh"
                 ? "置顶线程"
-                : "Pin thread"}
+              : "Pin thread"}
           </button>
+          <button
+            className="danger"
+            role="menuitem"
+            onClick={() => openDeleteConfirmation(threadMenu.cwd, threadMenu.file, threadMenu.name)}
+          >
+            {language === "zh" ? "永久删除线程" : "Permanently delete thread"}
+          </button>
+        </div>
+      )}
+      {deleteConfirm && (
+        <div className="modal-backdrop thread-delete-backdrop" onMouseDown={() => setDeleteConfirm(null)}>
+          <div
+            className="modal thread-delete-confirm"
+            onMouseDown={(event) => event.stopPropagation()}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="thread-delete-title"
+          >
+            <div className="modal-title" id="thread-delete-title">
+              {language === "zh" ? "永久删除线程？" : "Permanently delete thread?"}
+            </div>
+            <div className="modal-msg">
+              {language === "zh"
+                ? `“${deleteConfirm.name}”及其完整对话记录将被永久删除，删除后无法恢复。`
+                : `“${deleteConfirm.name}” and its complete conversation history will be permanently deleted and cannot be recovered.`}
+            </div>
+            <div className="modal-actions">
+              <button className="btn" onClick={() => setDeleteConfirm(null)}>
+                {language === "zh" ? "取消" : "Cancel"}
+              </button>
+              <button
+                className="btn danger"
+                onClick={() => {
+                  const item = deleteConfirm;
+                  setDeleteConfirm(null);
+                  void deleteThread(item.cwd, item.file, item.name);
+                }}
+              >
+                <Trash size={13} />
+                {language === "zh" ? "删除" : "Delete"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </aside>

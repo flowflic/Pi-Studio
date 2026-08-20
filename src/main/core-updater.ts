@@ -460,7 +460,7 @@ export async function installCoreUpdate(onProgress?: ProgressFn): Promise<CoreUp
         updated: true,
         from: status.current,
         to: targetVersion,
-        message: `Pi runtime v${targetVersion} installed as a standalone package at ${root}`,
+        message: `Pi 运行时 v${targetVersion} 已作为独立包安装到应用数据目录：${root}`,
       };
     }
 

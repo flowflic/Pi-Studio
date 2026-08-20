@@ -22,6 +22,7 @@ export function TitleBar() {
   const openSettings = useStore((s) => s.openSettings);
   const previewExpanded = useStore((s) => s.previewExpanded);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
+  const language = useStore((s) => s.config?.language || "en");
 
   const [menu, setMenu] = useState<MenuId | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -100,17 +101,17 @@ export function TitleBar() {
   const status = active
     ? `${activeName} · ${
         active.error
-          ? "connection failed"
+          ? language === "zh" ? "连接失败" : "connection failed"
           : active.connected
             ? active.model
               ? modelShort(active.model)
-              : "ready"
-            : "connecting…"
+              : language === "zh" ? "就绪" : "ready"
+            : language === "zh" ? "连接中…" : "connecting…"
       }`
     : runtime?.ok
-      ? "Pi ready"
+      ? language === "zh" ? "Pi 已就绪" : "Pi ready"
       : runtime
-        ? "Pi unavailable"
+        ? language === "zh" ? "Pi 不可用" : "Pi unavailable"
         : "Pi Studio";
   const statusTitle = active?.error || runtime?.error || status;
 
@@ -154,25 +155,25 @@ export function TitleBar() {
       <div className="tb-status" title={statusTitle}>
         {status}
       </div>
-      <button className="tb-settings-btn" onClick={openSettings} title="Settings" aria-label="Settings">
+      <button className="tb-settings-btn" onClick={openSettings} title={language === "zh" ? "设置" : "Settings"} aria-label={language === "zh" ? "设置" : "Settings"}>
         <SettingsIcon size={15} />
       </button>
       <div className="tb-win">
         <button
           className={`tb-win-btn ${previewExpanded ? "tb-preview-restore" : ""}`}
           onClick={() => (previewExpanded ? togglePreviewExpanded() : togglePreview())}
-          title={previewExpanded ? "收回侧边栏预览" : "Toggle preview"}
-          aria-label={previewExpanded ? "收回侧边栏预览" : "Toggle preview"}
+          title={previewExpanded ? (language === "zh" ? "收回侧边栏预览" : "Restore side preview") : language === "zh" ? "切换预览" : "Toggle preview"}
+          aria-label={previewExpanded ? (language === "zh" ? "收回侧边栏预览" : "Restore side preview") : language === "zh" ? "切换预览" : "Toggle preview"}
         >
           {previewExpanded ? <Contract size={14} /> : <Maximize size={14} />}
         </button>
-        <button className="tb-win-btn" onClick={() => window.pi.window.minimize()} title="Minimize">
+        <button className="tb-win-btn" onClick={() => window.pi.window.minimize()} title={language === "zh" ? "最小化" : "Minimize"} aria-label={language === "zh" ? "最小化" : "Minimize"}>
           <Minus size={14} />
         </button>
-        <button className="tb-win-btn" onClick={() => window.pi.window.maximize()} title="Maximize">
+        <button className="tb-win-btn" onClick={() => window.pi.window.maximize()} title={language === "zh" ? "最大化" : "Maximize"} aria-label={language === "zh" ? "最大化" : "Maximize"}>
           <Square size={12} />
         </button>
-        <button className="tb-win-btn close" onClick={() => window.pi.window.close()} title="Close">
+        <button className="tb-win-btn close" onClick={() => window.pi.window.close()} title={language === "zh" ? "关闭" : "Close"} aria-label={language === "zh" ? "关闭" : "Close"}>
           <Close size={14} />
         </button>
       </div>
