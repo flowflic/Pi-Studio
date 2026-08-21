@@ -1,6 +1,6 @@
 {
   "name": "pi-studio",
-  "version": "0.3.9",
+  "version": "0.4.0",
   "piRuntimeVersion": "0.84.1",
   "private": true,
   "license": "MIT",
@@ -19,6 +19,7 @@
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.json",
     "test:permission": "node scripts/test-permission-gate.mjs",
+    "test:html-reference": "node --experimental-strip-types scripts/test-html-reference.mjs",
     "bundle": "node scripts/bundle-runtime.mjs",
     "finalize-runtime": "node scripts/finalize-runtime.mjs",
     "pack": "npm run bundle && npm run build && electron-builder --dir && npm run finalize-runtime",

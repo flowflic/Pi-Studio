@@ -27,6 +27,11 @@ export const Search = (p: P) => (
     <path d="m20 20-3.2-3.2" />
   </svg>
 );
+export const SelectArrow = (p: P) => (
+  <svg {...base(p)}>
+    <path d="m5 3 14 9-6.3 1.1 3.2 6.5-2.7 1.3-3.2-6.5L5 18z" />
+  </svg>
+);
 export const Folder = (p: P) => (
   <svg {...base(p)}>
     <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />

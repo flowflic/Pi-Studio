@@ -3,24 +3,88 @@ import { useStore } from "../store";
 import { modelShort } from "../lib/format";
 import { reasoningLevelLabel } from "../lib/reasoning";
 import { useOutsideClose } from "../lib/useOutsideClose";
-import type { ModelInfo, PendingFile, PendingImage } from "../lib/types";
+import type { HtmlElementReference, ModelInfo, PendingFile, PendingImage } from "../lib/types";
 import { Plus, Paperclip, ImageIcon, Send, Stop, Smile, At, Shield, Edit, Zap, Folder, Search, Check, ChevronRight } from "./icons";
 
 let _pid = 0;
 const pid = () => `p${_pid++}`;
+const MAX_PASTED_FILE_BYTES = 50_000_000;
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".bmp": "image/bmp",
+  ".svg": "image/svg+xml",
+  ".avif": "image/avif",
+};
+
+function fileExtension(name: string): string {
+  const match = name.toLowerCase().match(/\.[a-z0-9]+$/);
+  return match?.[0] || "";
+}
+
+function imageMimeType(file: File): string {
+  if (file.type.toLowerCase().startsWith("image/")) return file.type;
+  return IMAGE_MIME_BY_EXT[fileExtension(file.name)] || "";
+}
 
 function fileToImage(file: File): Promise<PendingImage | null> {
   return new Promise((resolve) => {
-    if (!file.type.startsWith("image/")) return resolve(null);
+    const mimeType = imageMimeType(file);
+    if (!mimeType) return resolve(null);
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = String(reader.result || "");
       const base64 = dataUrl.split(",")[1] || "";
-      resolve({ id: pid(), dataUrl, base64, mimeType: file.type });
+      resolve(base64 ? { id: pid(), dataUrl, base64, mimeType } : null);
     };
     reader.onerror = () => resolve(null);
     reader.readAsDataURL(file);
   });
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length));
+    for (const byte of chunk) binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
+async function fileToAttachment(file: File): Promise<{ image?: PendingImage; file?: PendingFile } | null> {
+  if (file.size > MAX_PASTED_FILE_BYTES) throw new Error("文件超过 50 MB，无法粘贴");
+  const image = await fileToImage(file);
+  if (image) return { image };
+
+  let abs = "";
+  try {
+    abs = window.pi.app.getPathForFile(file) || (file as File & { path?: string }).path || "";
+  } catch {
+    // Clipboard-created files are not backed by a path; they are staged below.
+  }
+  if (abs) return { file: { abs, name: file.name || abs.split(/[\\/]/).pop() || "pasted-file" } };
+
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (!bytes.length) return null;
+  const staged = await window.pi.app.stageClipboardFile({
+    name: file.name || "pasted-file",
+    mimeType: file.type,
+    data: bytesToBase64(bytes),
+  });
+  return staged?.abs ? { file: { abs: staged.abs, name: staged.name || file.name || "pasted-file" } } : null;
+}
+
+function promptTextWithHtmlReferences(text: string, references: HtmlElementReference[]): string {
+  const prompt = text.trim();
+  const selectedElements = references
+    .map((reference) => reference.reference.trim())
+    .filter(Boolean)
+    .join("\n\n");
+  return prompt ? (selectedElements ? `${prompt}\n\n${selectedElements}` : prompt) : selectedElements;
 }
 
 export function Composer({ threadId }: { threadId: string }) {
@@ -50,10 +114,13 @@ export function Composer({ threadId }: { threadId: string }) {
   const setPendingFollowUp = useStore((s) => s.setPendingFollowUp);
   const sendPendingSteering = useStore((s) => s.sendPendingSteering);
   const changeDraftThreadFolder = useStore((s) => s.changeDraftThreadFolder);
+  const pushToast = useStore((s) => s.pushToast);
 
   const [text, setText] = useState("");
   const [images, setImages] = useState<PendingImage[]>([]);
   const [files, setFiles] = useState<PendingFile[]>([]);
+  const [htmlReferences, setHtmlReferences] = useState<HtmlElementReference[]>([]);
+  const [expandedHtmlReferences, setExpandedHtmlReferences] = useState<Record<string, boolean>>({});
   const [modelOpen, setModelOpen] = useState(false);
   const [expandedProviders, setExpandedProviders] = useState<Record<string, boolean>>({});
   const [cmdOpen, setCmdOpen] = useState(false);
@@ -85,6 +152,45 @@ export function Composer({ threadId }: { threadId: string }) {
     }
   }, [injected]);
 
+  // HTML preview annotation mode sends a structured element reference here.
+  // Keep the full context attached to the draft while rendering it as a
+  // collapsible card instead of exposing raw selector/HTML in the textarea.
+  useEffect(() => {
+    const onElementReference = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        threadId?: string;
+        reference?: string;
+        element?: {
+          selector?: string;
+          tagName?: string;
+          text?: string;
+          outerHTML?: string;
+          styles?: Record<string, string | number>;
+        };
+      }>).detail;
+      const reference = detail?.reference?.trim();
+      if (!reference || detail?.threadId !== threadId) return;
+      const element = detail.element || {};
+      const selected: HtmlElementReference = {
+        id: pid(),
+        reference,
+        selector: String(element.selector || "").trim(),
+        tagName: String(element.tagName || "").trim().toLowerCase(),
+        text: String(element.text || "").trim(),
+        outerHTML: String(element.outerHTML || "").trim(),
+        styles: element.styles,
+      };
+      // A new selection replaces the previous target. The composer should
+      // always describe the element the user most recently picked, rather
+      // than accumulating stale HTML references in the draft.
+      setHtmlReferences([selected]);
+      setExpandedHtmlReferences({});
+      requestAnimationFrame(() => taRef.current?.focus());
+    };
+    window.addEventListener("pi-studio-html-element-reference", onElementReference);
+    return () => window.removeEventListener("pi-studio-html-element-reference", onElementReference);
+  }, [threadId]);
+
   const autoGrow = () => {
     const ta = taRef.current;
     if (!ta) return;
@@ -93,24 +199,32 @@ export function Composer({ threadId }: { threadId: string }) {
   };
   useEffect(autoGrow, [text]);
 
-  const onDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    const dropped = e.dataTransfer.files;
-    if (!dropped?.length) return;
+  const addAttachments = async (sourceFiles: File[]) => {
     const imgs: PendingImage[] = [];
     const fs: PendingFile[] = [];
-    for (const f of Array.from(dropped)) {
-      if (f.type.startsWith("image/")) {
-        const im = await fileToImage(f);
-        if (im) imgs.push(im);
-      } else {
-        // dropped files have no reliable absolute path in renderer; read as image or skip
-        const im = await fileToImage(f);
-        if (im) imgs.push(im);
+    for (const f of sourceFiles) {
+      try {
+        const attachment = await fileToAttachment(f);
+        if (attachment?.image) imgs.push(attachment.image);
+        if (attachment?.file) fs.push(attachment.file);
+      } catch (error: any) {
+        const name = f.name || (language === "zh" ? "文件" : "file");
+        const reason = error?.message || (language === "zh" ? "无法读取" : "could not be read");
+        pushToast("warning", language === "zh" ? `${name} 添加失败：${reason}` : `${name} could not be added: ${reason}`);
       }
     }
     setImages((p) => [...p, ...imgs]);
-    setFiles((p) => [...p, ...fs]);
+    setFiles((p) => {
+      const existing = new Set(p.map((file) => file.abs));
+      return [...p, ...fs.filter((file) => !existing.has(file.abs))];
+    });
+  };
+
+  const onDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    const dropped = Array.from(e.dataTransfer.files || []);
+    if (!dropped.length) return;
+    await addAttachments(dropped);
   };
 
   const addFiles = async () => {
@@ -122,31 +236,28 @@ export function Composer({ threadId }: { threadId: string }) {
 
   const onPaste = async (e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
-    if (!items) return;
-    const imgs: PendingImage[] = [];
-    for (const it of Array.from(items)) {
-      if (it.type.startsWith("image/")) {
-        const f = it.getAsFile();
-        if (f) {
-          const im = await fileToImage(f);
-          if (im) imgs.push(im);
-        }
-      }
-    }
-    if (imgs.length) {
-      e.preventDefault();
-      setImages((p) => [...p, ...imgs]);
-    }
+    const itemFiles = items
+      ? Array.from(items)
+        .filter((item) => item.kind === "file" || item.type.toLowerCase().startsWith("image/"))
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => !!file)
+      : [];
+    const files = itemFiles.length ? itemFiles : Array.from(e.clipboardData?.files || []);
+    if (!files.length) return;
+    e.preventDefault();
+    await addAttachments(files);
   };
 
   const send = async (mode?: "steer" | "followUp") => {
-    const t = text.trim();
+    const t = promptTextWithHtmlReferences(text, htmlReferences);
     if (!t && !images.length && !files.length) return;
     const imgs = images.map((im) => ({ data: im.base64, mimeType: im.mimeType }));
     const atts = files.map((f) => ({ abs: f.abs, name: f.name }));
     setText("");
     setImages([]);
     setFiles([]);
+    setHtmlReferences([]);
+    setExpandedHtmlReferences({});
     await sendPrompt(threadId, t, imgs.length ? imgs : undefined, atts.length ? atts : undefined, mode);
   };
 
@@ -155,21 +266,31 @@ export function Composer({ threadId }: { threadId: string }) {
   // user re-edits it or promotes it to steering first.
   const queuePending = () => {
     const t = text.trim();
-    if (!t && !images.length && !files.length) return;
+    if (!t && !htmlReferences.length && !images.length && !files.length) return;
     if (pending) {
       // A follow-up is already staged; queue this one straight into pi.
       const imgs = images.map((im) => ({ data: im.base64, mimeType: im.mimeType }));
       const atts = files.map((f) => ({ abs: f.abs, name: f.name }));
+      const prompt = promptTextWithHtmlReferences(text, htmlReferences);
       setText("");
       setImages([]);
       setFiles([]);
-      sendPrompt(threadId, t, imgs.length ? imgs : undefined, atts.length ? atts : undefined, "followUp");
+      setHtmlReferences([]);
+      setExpandedHtmlReferences({});
+      sendPrompt(threadId, prompt, imgs.length ? imgs : undefined, atts.length ? atts : undefined, "followUp");
       return;
     }
-    setPendingFollowUp(threadId, { text: t, images, files });
+    setPendingFollowUp(threadId, {
+      text: t,
+      images,
+      files,
+      htmlReferences: htmlReferences.length ? htmlReferences : undefined,
+    });
     setText("");
     setImages([]);
     setFiles([]);
+    setHtmlReferences([]);
+    setExpandedHtmlReferences({});
   };
 
   const reEditPending = () => {
@@ -177,6 +298,8 @@ export function Composer({ threadId }: { threadId: string }) {
     setText(pending.text);
     setImages(pending.images);
     setFiles(pending.files);
+    setHtmlReferences(pending.htmlReferences || []);
+    setExpandedHtmlReferences({});
     setPendingFollowUp(threadId, null);
     requestAnimationFrame(() => {
       taRef.current?.focus();
@@ -302,6 +425,19 @@ export function Composer({ threadId }: { threadId: string }) {
     const path = await window.pi.app.showOpenDialog("folder");
     if (!path || Array.isArray(path)) return;
     await chooseProject(path);
+  };
+
+  const toggleHtmlReference = (id: string) => {
+    setExpandedHtmlReferences((current) => ({ ...current, [id]: !current[id] }));
+  };
+
+  const removeHtmlReference = (id: string) => {
+    setHtmlReferences((current) => current.filter((reference) => reference.id !== id));
+    setExpandedHtmlReferences((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
   };
 
   return (
@@ -432,7 +568,11 @@ export function Composer({ threadId }: { threadId: string }) {
                 {language === "zh" ? "待处理后续" : "Pending follow-up"}
                 <span className="pf-sub">· 当前任务完成后自动发送</span>
               </div>
-              <div className="pf-text">{pending.text || `${pending.images.length + pending.files.length} 个附件`}</div>
+              <div className="pf-text">
+                {pending.text || (pending.htmlReferences?.length
+                  ? `${pending.htmlReferences.length} 个 HTML 元素`
+                  : `${pending.images.length + pending.files.length} 个附件`)}
+              </div>
             </div>
             <div className="pf-actions">
               <button className="pf-btn" title="重新编辑" onClick={reEditPending}>
@@ -446,6 +586,43 @@ export function Composer({ threadId }: { threadId: string }) {
         )}
 
         <div className="composer-input">
+          {htmlReferences.length > 0 && (
+            <div className="composer-html-references" aria-label={language === "zh" ? "已选择的 HTML 元素" : "Selected HTML elements"}>
+              {htmlReferences.map((reference) => {
+                const expanded = !!expandedHtmlReferences[reference.id];
+                const tag = reference.tagName ? `<${reference.tagName}>` : "HTML element";
+                const selector = reference.selector || tag;
+                return (
+                  <div key={reference.id} className={`composer-html-reference ${expanded ? "expanded" : ""}`}>
+                    <div className="composer-html-reference-row">
+                      <button
+                        type="button"
+                        className="composer-html-reference-toggle"
+                        aria-expanded={expanded}
+                        title={language === "zh" ? "展开或折叠元素引用" : "Expand or collapse element reference"}
+                        onClick={() => toggleHtmlReference(reference.id)}
+                      >
+                        <ChevronRight className={`composer-html-reference-chevron ${expanded ? "open" : ""}`} size={13} />
+                        <span className="composer-html-reference-badge">HTML</span>
+                        <span className="composer-html-reference-tag">{tag}</span>
+                        <code className="composer-html-reference-selector" title={selector}>{selector}</code>
+                      </button>
+                      <button
+                        type="button"
+                        className="composer-html-reference-remove"
+                        aria-label={language === "zh" ? "移除 HTML 元素引用" : "Remove HTML element reference"}
+                        title={language === "zh" ? "移除引用" : "Remove reference"}
+                        onClick={() => removeHtmlReference(reference.id)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                    {expanded && <pre className="composer-html-reference-code">{reference.reference}</pre>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
           <textarea
             ref={taRef}
             rows={1}
@@ -454,8 +631,8 @@ export function Composer({ threadId }: { threadId: string }) {
                  ? "输入插话…回车键存为待处理后续（完成后发送），Alt+回车立即插入（中断当前）"
                 : "Type a message… Enter queues a follow-up; Alt+Enter steers immediately"
               : language === "zh"
-                ? "随心输入  ·  粘贴/拖拽图片  ·  + 添加文件"
-                : "Type a message · Paste or drop images · + Add files"}
+                ? "随心输入  ·  粘贴图片或文件  ·  + 添加文件"
+                : "Type a message · Paste images or files · + Add files"}
             value={text}
             onChange={(e) => {
               setText(e.target.value);
@@ -475,8 +652,8 @@ export function Composer({ threadId }: { threadId: string }) {
               <button
                 className={`pill-btn perm-btn ${permission === "full" ? "perm-full" : ""}`}
                 title={language === "zh"
-                  ? "权限级别：沙盒仅自动放行明确只读的命令行操作，并限制项目外写入；完全权限为 pi 默认无限制模式"
-                  : "Permission level: sandbox auto-allows clearly read-only shell commands and restricts writes outside the project; full access uses Pi's unrestricted mode"}
+                  ? "权限级别：沙盒自动放行可判断为低风险的明确操作，删除项目、敏感路径、外部脚本及无法确认的操作需用户确认；完全权限为 pi 默认无限制模式"
+                  : "Permission level: sandbox auto-allows verifiable low-risk explicit operations and asks before project deletion, sensitive paths, external scripts, or uncertain actions; full access uses Pi's unrestricted mode"}
                 onClick={() => setPermOpen((v) => !v)}
               >
                 <Shield size={13} /> {permission === "full" ? (language === "zh" ? "完全权限" : "Full access") : language === "zh" ? "沙盒" : "Sandbox"} ▾
@@ -491,7 +668,7 @@ export function Composer({ threadId }: { threadId: string }) {
                     }}
                 >
                     <span className="o1">{language === "zh" ? "沙盒" : "Sandbox"}</span>
-                    <span className="o2">{language === "zh" ? "敏感命令执行前需确认（默认）" : "Confirm sensitive commands before execution (default)"}</span>
+                    <span className="o2">{language === "zh" ? "低风险明确操作自动执行，危险操作执行前需确认（默认）" : "Auto-run low-risk explicit operations; confirm dangerous actions (default)"}</span>
                   </button>
                   <button
                     className={`opt ${permission === "full" ? "active" : ""}`}
@@ -629,7 +806,7 @@ export function Composer({ threadId }: { threadId: string }) {
                   className="send-btn"
                   title={language === "zh" ? "存为待处理后续（回车）；Alt+回车立即插入" : "Queue as follow-up (Enter); Alt+Enter steers immediately"}
                   onClick={() => queuePending()}
-                  disabled={!text.trim() && !images.length && !files.length}
+                  disabled={!text.trim() && !htmlReferences.length && !images.length && !files.length}
                 >
                   <Send size={15} />
                 </button>
@@ -638,7 +815,7 @@ export function Composer({ threadId }: { threadId: string }) {
                 </button>
               </>
             ) : (
-              <button className="send-btn" title={language === "zh" ? "发送" : "Send"} onClick={() => send()} disabled={!text.trim() && !images.length && !files.length}>
+              <button className="send-btn" title={language === "zh" ? "发送" : "Send"} onClick={() => send()} disabled={!text.trim() && !htmlReferences.length && !images.length && !files.length}>
                 <Send size={15} />
               </button>
             )}

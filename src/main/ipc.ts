@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -30,7 +30,7 @@ import {
 } from "./models-service";
 import { PiBridge, isAppManagedRuntime, resetPiRuntime, resolvePiRuntime, runtimeKind } from "./pi-bridge";
 import { createGateModeFile, ensureGateExtension, removeGateModeFile, writeGateMode } from "./permission-gate";
-import { readPreview, readRemotePreview } from "./preview-service";
+import { readPreview, readRemotePreview, writePreviewHtml } from "./preview-service";
 import { getAgentDir, getSessionsDir, getTotalUsage, type ProjectSummary, readThreadHistory, scanProjects, searchThreads, type ThreadSearchHit } from "./session-store";
 import {
   getAdditionalSkillPaths,
@@ -120,6 +120,43 @@ interface Attachment {
   name: string;
 }
 
+const CLIPBOARD_FILE_MAX_BYTES = 50_000_000;
+const CLIPBOARD_FILE_DIR = "pi-studio-clipboard";
+const CLIPBOARD_MIME_EXT: Record<string, string> = {
+  "text/plain": ".txt",
+  "text/csv": ".csv",
+  "application/json": ".json",
+  "application/pdf": ".pdf",
+  "application/zip": ".zip",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+};
+
+function stageClipboardFile(args: { name?: string; mimeType?: string; data?: string }): { abs: string; name: string; size: number } {
+  const encoded = typeof args?.data === "string" ? args.data : "";
+  if (!encoded) throw new Error("Clipboard file is empty");
+  if (encoded.length > Math.ceil(CLIPBOARD_FILE_MAX_BYTES * 4 / 3) + 16) {
+    throw new Error("Clipboard file is too large (maximum 50 MB)");
+  }
+
+  const bytes = Buffer.from(encoded, "base64");
+  if (!bytes.length) throw new Error("Clipboard file is empty");
+  if (bytes.length > CLIPBOARD_FILE_MAX_BYTES) throw new Error("Clipboard file is too large (maximum 50 MB)");
+
+  const rawName = basename(String(args?.name || "pasted-file"))
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+    .replace(/\.+$/g, "")
+    .trim();
+  let name = (rawName || "pasted-file").slice(0, 180);
+  if (!extname(name)) name += CLIPBOARD_MIME_EXT[String(args?.mimeType || "").toLowerCase()] || ".bin";
+
+  const directory = join(app.getPath("temp"), CLIPBOARD_FILE_DIR);
+  mkdirSync(directory, { recursive: true });
+  const abs = join(directory, `${randomUUID()}-${name}`);
+  writeFileSync(abs, bytes, { flag: "wx" });
+  return { abs, name, size: bytes.length };
+}
+
 function sameSessionFile(left: string, right: string): boolean {
   if (!left || !right) return false;
   try {
@@ -197,13 +234,13 @@ function processAttachments(attachments: Attachment[] | undefined, text: string)
           const st = statSync(a.abs);
           if (st.size <= 500_000) {
             const content = readFileSync(a.abs, "utf8");
-            extra += `\n\n<file name="${a.name}">\n${content}\n</file>`;
+            extra += `\n\n<file name="${a.name}" path="${a.abs}">\n${content}\n</file>`;
             continue;
           }
         }
         extra += `\n\n<file name="${a.name}" path="${a.abs}" note="attached (binary or large; not inlined)" />`;
       } catch (e: any) {
-        extra += `\n\n<file name="${a.name}" error="${e?.message || "read failed"}" />`;
+        extra += `\n\n<file name="${a.name}" path="${a.abs}" error="${e?.message || "read failed"}" />`;
       }
     }
   }
@@ -1690,6 +1727,12 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     return payload.kind === "html"
       ? { ...payload, previewUrl: createHtmlPreviewUrl(absPath, projectRoot) }
       : payload;
+  });
+  ipcMain.handle("app:stageClipboardFile", (_e, args: { name?: string; mimeType?: string; data?: string }) => {
+    return stageClipboardFile(args || {});
+  });
+  ipcMain.handle("app:savePreviewHtml", (_e, args: { absPath?: string; projectRoot?: string; html?: string }) => {
+    return writePreviewHtml(args?.absPath || "", args?.projectRoot, args?.html || "");
   });
   ipcMain.handle("app:showFileContextMenu", (event, absPath: string) => {
     if (!absPath || !existsSync(absPath)) return { ok: false, error: "File not found" };

@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, extname } from "node:path";
+import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { basename, extname, isAbsolute, relative, resolve, sep } from "node:path";
 import XLSX from "xlsx";
 
 /**
@@ -109,6 +109,12 @@ const PPTX_EXTS = new Set([".pptx"]);
 
 const TEXT_MAX = 2_000_000; // 2 MB of text
 const BIN_MAX = 40_000_000; // 40 MB binary
+const HTML_WRITE_MAX = 10_000_000;
+
+function pathInside(root: string, target: string): boolean {
+  const rel = relative(root, target);
+  return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
+}
 
 function looksBinary(buf: Buffer): boolean {
   const len = Math.min(buf.length, 8000);
@@ -217,6 +223,27 @@ export function readPreview(absPath: string): PreviewPayload {
     }
   }
   return { ...base, kind: "unsupported", message: "No preview available for this file type" };
+}
+
+/** Persist an edited HTML preview after validating the requested file scope. */
+export function writePreviewHtml(absPath: string, projectRoot: string | undefined, html: string): { ok: true; size: number } {
+  if (!absPath || !isAbsolute(absPath)) throw new Error("An absolute HTML path is required");
+  if (typeof html !== "string" || html.length > HTML_WRITE_MAX) throw new Error("HTML content is too large to save");
+
+  const file = realpathSync(resolve(absPath));
+  if (!statSync(file).isFile() || ![".html", ".htm"].includes(extname(file).toLowerCase())) {
+    throw new Error("HTML preview edits require an .html or .htm file");
+  }
+
+  if (projectRoot) {
+    const root = realpathSync(resolve(projectRoot));
+    if (!statSync(root).isDirectory() || !pathInside(root, file)) {
+      throw new Error("HTML preview file is outside the project root");
+    }
+  }
+
+  writeFileSync(file, html, "utf8");
+  return { ok: true, size: Buffer.byteLength(html, "utf8") };
 }
 
 const REMOTE_SHEET_MAX_SHEETS = 20;

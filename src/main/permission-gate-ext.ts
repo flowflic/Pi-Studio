@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 type RiskLevel = "allow" | "approval" | "always";
@@ -17,11 +17,6 @@ type HardRiskRule = {
 };
 
 const HARD_RISK_RULES: HardRiskRule[] = [
-  {
-    pattern: /\b(rm|rmdir|unlink|shred|remove-item|clear-item|clear-content)\b|(^|[\s&|;])(del|erase|rd)(?=\s|$)/i,
-    reason: "A file or directory deletion command was detected. Deleted data may not be recoverable.",
-    reasonZh: "检测到文件或目录删除命令，删除的数据可能无法恢复。",
-  },
   {
     pattern: /\b(format|format-volume|mkfs(?:\.\w+)?|diskpart|dd|wipefs)\b/i,
     reason: "A disk formatting or raw disk-write command was detected. It can destroy an entire volume.",
@@ -83,7 +78,7 @@ const HARD_RISK_RULES: HardRiskRule[] = [
     reasonZh: "检测到内联 Unix Shell 脚本，它可以执行任意 Shell 操作。",
   },
   {
-    pattern: /\bnode\s+-e\b/i,
+    pattern: /\bnode\s+(?:-e|--eval|-p|--print|-r|--require|--loader|--import|--experimental-loader)\b/i,
     reason: "Inline Node.js code (`node -e`) was detected. It can execute arbitrary code and cannot be verified as read-only.",
     reasonZh: "检测到内联 Node.js（node -e），它可以执行任意代码，无法可靠确认仅执行只读操作。",
   },
@@ -100,9 +95,24 @@ const HARD_RISK_RULES: HardRiskRule[] = [
 ];
 
 const FILE_MUTATION =
-  /\b(set-content|out-file|add-content|new-item|copy-item|move-item|rename-item|mkdir|md|cp|mv|touch|tee)\b/i;
+  /\b(set-content|out-file|add-content|clear-content|new-item|copy-item|move-item|rename-item|mkdir|md|cp|mv|touch|tee)\b/i;
 const NETWORK_COMMAND = /\b(curl|curl\.exe|wget|invoke-webrequest|irm|iwr)\b/i;
 const NETWORK_WRITE = /(?:^|\s)(?:-x|--request)\s+(?:post|put|patch|delete)\b|(?:^|\s)(?:-d|--data(?:-\w+)?|-t|--upload-file)(?:\s|$)/i;
+
+// Sandbox intentionally has a useful middle ground: operations with an
+// explicit, non-sensitive file target can run without interrupting the user,
+// but the classifier remains fail-closed for destructive, sensitive, external
+// code execution, or opaque operations. The model's selected tool call is the
+// operation being judged; this extension never silently broadens full access.
+const DELETION_COMMAND = /(?:^|[\s;&|])(?:rm|rmdir|unlink|shred|remove-item|clear-item|del|erase|rd)(?:\.exe)?(?=\s|$)/i;
+const RECURSIVE_DELETE = /(?:\s|^)(?:-[^-\s]*r|--recursive|-recurse|\/s)(?:\s|$)|\*|\?|\[[^\]]+\]/i;
+const SENSITIVE_FILE_NAME = /^(?:\.env(?:\..*)?|\.npmrc|\.pypirc|\.netrc|id_(?:rsa|dsa|ecdsa|ed25519)|credentials?(?:[-_.].*)?|secrets?(?:[-_.].*)?|.*(?:^|[-_.])(secret|credential|password|passwd|token|api[-_]?key|access[-_]?key|private[-_]?key)(?:[-_.].*)?)$/i;
+const SENSITIVE_FILE_EXT = /\.(?:pem|key|p12|pfx|jks|keystore|kdbx|ppk|asc|gpg)$/i;
+const SENSITIVE_DIRECTORY = /^(?:\.aws|\.azure|\.git|\.gnupg|\.hg|\.ssh|\.svn|credentials?|secrets?)$/i;
+const SENSITIVE_SYSTEM_LOCATION = /^(?:[a-z]:\/)?(?:windows|program files(?: \(x86\))?|programdata|recovery|system volume information)(?:\/|$)|^\/(?:etc|root|usr|var|system)(?:\/|$)|^\/\//i;
+const DANGEROUS_SCRIPT_NAME = /(?:^|[-_./\\])(clean|delete|deploy|destroy|dangerous|erase|format|install|publish|release|remove|reset|uninstall|wipe|prune)(?:[-_.\\/]|$)/i;
+const SAFE_PROJECT_NPM_TASK = /^(?:build|check|compile|dev|format|generate|lint|preview|test|typecheck|validate)$/i;
+const SAFE_NON_MUTATING_SEGMENT = /^(?:echo|printf|true|false|clear|cls|date|time)(?:\s+[^;&|<>]*)?$/i;
 
 const READ_ONLY_SEGMENTS: RegExp[] = [
   /^(?:pwd|get-location|whoami|hostname)(?:\s+[^;&|<>]*)?$/i,
@@ -222,6 +232,321 @@ export function parseShellCommand(command: string): ParsedShell {
   return { segments, separators, hasRedirection, hasSubstitution, unterminatedQuote: quote !== null };
 }
 
+function splitShellWords(segment: string): string[] | null {
+  const words: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  const flush = () => {
+    if (current) words.push(current);
+    current = "";
+  };
+
+  for (let i = 0; i < segment.length; i++) {
+    const char = segment[i];
+    const next = segment[i + 1] || "";
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "`" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    // Keep backslashes intact: on Windows they are path separators, while a
+    // POSIX escaped character is still conservatively treated as an opaque
+    // token by the path checks below.
+    if (char === "\\" && quote !== "'") {
+      current += char;
+      if (next) {
+        current += next;
+        i++;
+      }
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      else current += char;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      flush();
+      continue;
+    }
+    current += char;
+  }
+  if (quote || escaped) return null;
+  flush();
+  return words;
+}
+
+function commandName(value: string): string {
+  return value.trim().split(/[\\/]/).pop()?.replace(/\.exe$/i, "").toLowerCase() || "";
+}
+
+function cleanPathToken(value: string): string {
+  return value.trim().replace(/^['"]|['"]$/g, "").replace(/[;,]+$/g, "");
+}
+
+function isSensitivePath(path: string): boolean {
+  const normalized = cleanPathToken(path).replace(/\\/g, "/");
+  if (!normalized) return false;
+  const pieces = normalized.split("/").filter(Boolean);
+  const name = pieces[pieces.length - 1] || "";
+  return SENSITIVE_SYSTEM_LOCATION.test(normalized) || pieces.some((piece) => SENSITIVE_DIRECTORY.test(piece)) || SENSITIVE_FILE_NAME.test(name) || SENSITIVE_FILE_EXT.test(name);
+}
+
+function hasPathWildcard(path: string): boolean {
+  return /[*?]|\[[^\]]*\]/.test(cleanPathToken(path));
+}
+
+type PathScope = "inside" | "outside" | "sensitive" | "ambiguous";
+
+function pathScope(path: string, cwd: string): PathScope {
+  const clean = cleanPathToken(path);
+  if (!clean || hasPathWildcard(clean)) return "ambiguous";
+  if (isSensitivePath(clean)) return "sensitive";
+  // A leading ~ is resolved by the shell before Pi can run the operation and
+  // is never project-relative.
+  if (/^~(?:[\\/]|$)/.test(clean)) return "outside";
+  if (!isOutsideProject(clean, cwd)) return "inside";
+  try {
+    return isSensitivePath(realPathWithMissingTail(resolve(cwd, clean))) ? "sensitive" : "outside";
+  } catch {
+    return "outside";
+  }
+}
+
+function optionName(value: string): string {
+  return value.replace(/^(?:--?|\/)/, "").split("=", 1)[0].toLowerCase();
+}
+
+function isOption(value: string): boolean {
+  return /^--?[a-z][a-z-]*(?:=.*)?$/i.test(value);
+}
+
+function looksLikePathArgument(value: string): boolean {
+  const clean = cleanPathToken(value);
+  return Boolean(clean) && (/^(?:\.\.?[\\/]|~[\\/]|[a-z]:[\\/]|[\\/])/.test(clean) || /[\\/]/.test(clean) || /\.[a-z0-9]{1,8}$/i.test(clean));
+}
+
+function optionValues(words: string[], names: Set<string>): string[] {
+  const values: string[] = [];
+  for (let i = 1; i < words.length; i++) {
+    const word = words[i];
+    if (!isOption(word)) continue;
+    const [rawName, inlineValue] = word.split(/=(.*)/s, 2);
+    if (!names.has(optionName(rawName))) continue;
+    if (inlineValue !== undefined && inlineValue) values.push(inlineValue);
+    else if (words[i + 1] && !isOption(words[i + 1])) values.push(words[++i]);
+  }
+  return values;
+}
+
+function positionalValues(words: string[], skipOptions = true): string[] {
+  const values: string[] = [];
+  let positionalOnly = false;
+  for (let i = 1; i < words.length; i++) {
+    const word = words[i];
+    if (word === "--") {
+      positionalOnly = true;
+      continue;
+    }
+    if (skipOptions && !positionalOnly && isOption(word)) {
+      // Common options with a following value must not be mistaken for a
+      // destination path (for example -Value text or -ItemType File).
+      if (!word.includes("=") && words[i + 1] && !isOption(words[i + 1]) && /^(?:path|literalpath|destination|target|name|itemtype|value|encoding|filter|include|exclude|force|append|recurse|recursive|s|q|f|r|t)$/i.test(optionName(word))) {
+        i++;
+      }
+      continue;
+    }
+    values.push(word);
+  }
+  return values;
+}
+
+function redirectionTargets(segment: string): string[] {
+  const targets: string[] = [];
+  const pattern = />{1,2}\s*(?:"([^"]+)"|'([^']+)'|([^\s;&|<>]+))/g;
+  for (const match of segment.matchAll(pattern)) targets.push(match[1] || match[2] || match[3] || "");
+  return targets;
+}
+
+function mutationTargets(segment: string): string[] {
+  const words = splitShellWords(segment);
+  if (!words?.length) return [];
+  const name = commandName(words[0]);
+  const paths = redirectionTargets(segment);
+  const pathFlags = new Set(["path", "literalpath", "destination", "target", "outfile", "filepath", "file", "literaldestination"]);
+  const flagged = optionValues(words, pathFlags);
+  const positional = positionalValues(words);
+
+  if (name === "set-content" || name === "add-content" || name === "clear-content" || name === "out-file" || name === "new-item" || name === "mkdir" || name === "md" || name === "touch" || name === "tee") {
+    paths.push(...flagged, ...(flagged.length ? [] : positional.slice(0, 1)));
+  } else if (name === "copy-item" || name === "move-item" || name === "rename-item") {
+    paths.push(...flagged, ...(flagged.length ? [] : positional));
+  } else if (name === "cp" || name === "mv") {
+    paths.push(...flagged, ...(flagged.length ? [] : positional.slice(-2)));
+  }
+  return paths.map(cleanPathToken).filter(Boolean);
+}
+
+function deletionTargets(segment: string): string[] {
+  const words = splitShellWords(segment);
+  if (!words?.length) return [];
+  const name = commandName(words[0]);
+  const flagged = optionValues(words, new Set(["path", "literalpath"]));
+  const positional = positionalValues(words);
+  if (name === "remove-item" || name === "clear-item" || name === "clear-content") return flagged.length ? flagged : positional.slice(0, 1);
+  return positional;
+}
+
+function isRecursiveDeletion(segment: string): boolean {
+  const masked = maskQuotedLiterals(segment);
+  return /(?:^|\s)-[a-z]*r[a-z]*(?:\s|$)/i.test(masked) || RECURSIVE_DELETE.test(masked) || /\b(?:remove-item|clear-item)\b[^;&|<>]*-(?:recurse|recursive)\b/i.test(masked);
+}
+
+function projectScriptDecision(segment: string, cwd: string): ShellDecision | null {
+  const words = splitShellWords(segment);
+  if (!words?.length) return null;
+  const name = commandName(words[0]);
+
+  if (name === "npm" || name === "pnpm" || name === "yarn") {
+    const taskIndex = words[1]?.toLowerCase() === "run" ? 2 : 1;
+    const task = words[taskIndex] || "";
+    if (!task || task.startsWith("-")) return null;
+    if ((words[1]?.toLowerCase() === "run" || /^(?:build|check|compile|dev|format|generate|lint|preview|test|typecheck|validate)$/i.test(task)) && DANGEROUS_SCRIPT_NAME.test(task)) {
+      return {
+        risk: "approval",
+        reason: "The package task name suggests cleanup, deployment, installation, or another state-changing operation.",
+        reasonZh: "该包任务名称疑似清理、部署、安装或其他状态变更操作。",
+      };
+    }
+    if (words[1]?.toLowerCase() === "run" && SAFE_PROJECT_NPM_TASK.test(task)) return { risk: "allow", reason: "" };
+    if (/^(?:build|check|compile|dev|format|generate|lint|preview|test|typecheck|validate)$/i.test(task)) return { risk: "allow", reason: "" };
+    return null;
+  }
+
+  if (name !== "node" && name !== "python" && name !== "python3") return null;
+  const scriptIndex = words[1] === "--" ? 2 : 1;
+  const script = words[scriptIndex];
+  if (!script || script === "-" || script.startsWith("-")) return null;
+  const scope = pathScope(script, cwd);
+  if (scope === "sensitive" || scope === "outside" || scope === "ambiguous") {
+    return {
+      risk: "always",
+      reason: "The script path is outside the project or points to a sensitive/ambiguous location.",
+      reasonZh: "脚本路径位于项目外，或指向敏感/无法确认的位置。",
+    };
+  }
+  for (const argument of words.slice(scriptIndex + 1)) {
+    const inlinePath = argument.match(/^--?(?:output|out|path|file|dir|destination|dest|input|config)=(.+)$/i)?.[1];
+    const candidate = inlinePath || (!isOption(argument) && looksLikePathArgument(argument) ? argument : "");
+    if (!candidate) continue;
+    const argumentScope = pathScope(candidate, cwd);
+    if (argumentScope === "sensitive" || argumentScope === "outside" || argumentScope === "ambiguous") {
+      return {
+        risk: "always",
+        reason: "A script argument points to a sensitive, outside-project, or ambiguous path.",
+        reasonZh: "脚本参数指向敏感位置、项目外路径，或无法可靠确认。",
+      };
+    }
+  }
+  if (DANGEROUS_SCRIPT_NAME.test(script)) {
+    return {
+      risk: "approval",
+      reason: "The script name suggests a destructive or externally state-changing operation.",
+      reasonZh: "脚本名称疑似破坏性或会修改外部状态的操作。",
+    };
+  }
+  return { risk: "allow", reason: "" };
+}
+
+function projectMutationDecision(segment: string, cwd: string): ShellDecision | null {
+  const paths = mutationTargets(segment);
+  if (!paths.length) return null;
+  const scopes = paths.map((path) => pathScope(path, cwd));
+  if (scopes.some((scope) => scope === "sensitive")) {
+    return {
+      risk: "always",
+      reason: "The command writes to a sensitive file or directory.",
+      reasonZh: "该命令将写入敏感文件或目录。",
+    };
+  }
+  if (scopes.some((scope) => scope === "ambiguous")) {
+    return {
+      risk: "always",
+      reason: "The command writes to an ambiguous path that cannot be verified safely.",
+      reasonZh: "该命令将写入无法可靠确认的路径。",
+    };
+  }
+  return { risk: "allow", reason: "" };
+}
+
+function resolvesToProjectRoot(path: string, cwd: string): boolean {
+  try {
+    return realPathWithMissingTail(cwd) === realPathWithMissingTail(resolve(cwd, cleanPathToken(path)));
+  } catch {
+    return false;
+  }
+}
+
+function isExistingDirectory(path: string, cwd: string): boolean {
+  try {
+    return statSync(resolve(cwd, cleanPathToken(path))).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function deletionDecision(segment: string, cwd: string): ShellDecision | null {
+  if (!DELETION_COMMAND.test(segment)) return null;
+  const targets = deletionTargets(segment);
+  if (isRecursiveDeletion(segment) || !targets.length) {
+    return {
+      risk: "always",
+      reason: "A recursive, bulk, or otherwise ambiguous deletion command was detected. Deleted data may not be recoverable.",
+      reasonZh: "检测到递归、批量或无法确认目标的删除命令，删除的数据可能无法恢复。",
+    };
+  }
+  const name = commandName(splitShellWords(segment)?.[0] || "");
+  if (name === "rmdir" || name === "rd" || targets.some((target) => resolvesToProjectRoot(target, cwd) || isExistingDirectory(target, cwd))) {
+    return {
+      risk: "always",
+      reason: "The command may delete a project directory or the project root and requires fallback user confirmation.",
+      reasonZh: "该命令可能删除项目目录或项目根目录，必须由用户兜底确认。",
+    };
+  }
+  const scopes = targets.map((target) => pathScope(target, cwd));
+  if (scopes.some((scope) => scope !== "inside")) {
+    return {
+      risk: "always",
+      reason: "The deletion targets a sensitive, outside-project, or ambiguous path.",
+      reasonZh: "删除目标位于敏感位置、项目外，或无法可靠确认。",
+    };
+  }
+  return { risk: "allow", reason: "A single, project-local deletion was classified as low risk." };
+}
+
+function lowRiskSegmentDecision(segment: string, cwd: string): ShellDecision | null {
+  const deletion = deletionDecision(segment, cwd);
+  if (deletion) return deletion;
+  const script = projectScriptDecision(segment, cwd);
+  const mutation = projectMutationDecision(segment, cwd);
+  const decisions = [script, mutation].filter((decision): decision is ShellDecision => Boolean(decision));
+  if (decisions.some((decision) => decision.risk === "always")) return decisions.find((decision) => decision.risk === "always")!;
+  if (decisions.some((decision) => decision.risk === "approval")) return decisions.find((decision) => decision.risk === "approval")!;
+  if (decisions.length) return { risk: "allow", reason: "" };
+  if (isReadOnlySegment(segment)) return { risk: "allow", reason: "" };
+  if (SAFE_NON_MUTATING_SEGMENT.test(maskQuotedLiterals(segment))) return { risk: "allow", reason: "" };
+  return null;
+}
+
 function isReadOnlySegment(segment: string): boolean {
   const masked = maskQuotedLiterals(segment);
   if (HARD_RISK_RULES.some((rule) => rule.pattern.test(masked))) return false;
@@ -270,7 +595,7 @@ function suggestedPrefix(command: string, parsed: ParsedShell): string | undefin
   return undefined;
 }
 
-export function classifyShellCommand(command: string): ShellDecision {
+export function classifyShellCommand(command: string, cwd = process.cwd()): ShellDecision {
   const exactKey = cacheKey(command);
   if (!exactKey) return { risk: "allow", reason: "" };
   const parsed = parseShellCommand(command);
@@ -304,6 +629,14 @@ export function classifyShellCommand(command: string): ShellDecision {
         : "该命令将从本机发起网络请求。",
       exactKey,
     };
+  }
+  const lowRisk = parsed.segments.map((segment) => lowRiskSegmentDecision(segment, cwd));
+  if (lowRisk.length > 0 && lowRisk.every((decision): decision is ShellDecision => Boolean(decision))) {
+    const always = lowRisk.find((decision) => decision?.risk === "always");
+    if (always) return { ...always, exactKey };
+    const approval = lowRisk.find((decision) => decision?.risk === "approval");
+    if (approval) return { ...approval, exactKey, prefixKey: suggestedPrefix(command, parsed) };
+    return { risk: "allow", reason: "" };
   }
   if (parsed.hasRedirection || FILE_MUTATION.test(riskText)) {
     return {
@@ -455,7 +788,7 @@ export default function permissionGate(pi: any) {
 
     if (event.toolName === "bash") {
       const command = String(event.input?.command || "");
-      const decision = classifyShellCommand(command);
+      const decision = classifyShellCommand(command, String(ctx.cwd || process.cwd()));
       if (decision.risk === "allow" || (decision.risk === "approval" && hasShellApproval(decision))) return undefined;
       return requestApproval(ctx, "Shell", language() === "zh" ? decision.reasonZh || decision.reason : decision.reason, command, {
         exactKey: decision.exactKey,
@@ -466,14 +799,41 @@ export default function permissionGate(pi: any) {
 
     if (event.toolName === "write" || event.toolName === "edit") {
       const path = String(event.input?.path || "");
-      if (!isOutsideProject(path, String(ctx.cwd || process.cwd()))) return undefined;
-      return requestApproval(
-        ctx,
-        event.toolName,
-        language() === "zh" ? "将修改当前项目真实路径之外的文件。" : "This will modify a file outside the real project path.",
-        path,
-        { cacheable: false },
-      );
+      const cwd = String(ctx.cwd || process.cwd());
+      if (!path) {
+        return requestApproval(
+          ctx,
+          event.toolName,
+          language() === "zh" ? "缺少明确文件路径，无法判断写入范围。" : "No explicit file path was provided, so the write scope cannot be verified.",
+          redactInput(event.input),
+          { cacheable: false },
+        );
+      }
+      if (hasPathWildcard(path)) {
+        return requestApproval(
+          ctx,
+          event.toolName,
+          language() === "zh" ? "文件路径包含通配符，无法确认实际修改范围。" : "The file path contains a wildcard, so the actual write scope cannot be verified.",
+          path,
+          { cacheable: false },
+        );
+      }
+      let resolvedPath = path;
+      try {
+        resolvedPath = realPathWithMissingTail(resolve(cwd, path));
+      } catch {
+        /* fall back to the lexical path check */
+      }
+      if (isSensitivePath(path) || isSensitivePath(resolvedPath)) {
+        return requestApproval(
+          ctx,
+          event.toolName,
+          language() === "zh" ? "将修改敏感文件或目录，必须由用户兜底确认。" : "This will modify a sensitive file or directory and requires fallback user confirmation.",
+          path,
+          { cacheable: false },
+        );
+      }
+      return undefined;
     }
 
     const toolName = String(event.toolName || "");

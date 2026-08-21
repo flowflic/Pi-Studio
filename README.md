@@ -94,7 +94,7 @@ API keys are user data. Do not commit `auth.json`, `models.json`, session files,
 
 ## Permissions and security
 
-Pi can read and write project files and execute tools on the user's behalf. Pi Studio starts new threads in sandbox mode by default. Full access must be selected explicitly for a thread or automation task. These controls reduce accidental actions but do not replace operating-system isolation or user review.
+Pi can read and write project files and execute tools on the user's behalf. Pi Studio starts new threads in sandbox mode by default. Sandbox automatically runs operations that can be verified as low-risk and explicit, while destructive or recursive deletion, sensitive paths, external code execution, network state changes, and uncertain operations still require confirmation. Full access must be selected explicitly for a thread or automation task. These controls reduce accidental actions but do not replace operating-system isolation or user review.
 
 Do not paste API keys or other secrets into public issues, pull requests, screenshots, or example files. For a security issue, contact the project maintainer privately through GitHub before public disclosure.
 

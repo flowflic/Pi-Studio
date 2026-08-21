@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import hljs from "highlight.js/lib/core";
 import { useStore } from "../store";
@@ -6,7 +6,7 @@ import { Markdown } from "../lib/markdown";
 import { CODE_LANGUAGE_ALIASES, CODE_LANGUAGES } from "../lib/code-languages";
 import { formatBytes } from "../lib/format";
 import { translateUiText } from "../lib/i18n";
-import { Close, Contract, Copy, Expand, Refresh } from "./icons";
+import { Close, Contract, Copy, Edit, Expand, Minus, Plus, Refresh, SelectArrow } from "./icons";
 
 Object.entries(CODE_LANGUAGES).forEach(([name, grammar]) => hljs.registerLanguage(name, grammar as any));
 Object.entries(CODE_LANGUAGE_ALIASES).forEach(([name, aliases]) => {
@@ -17,6 +17,60 @@ const PREVIEW_WIDTH_KEY = "pi-studio.preview-width";
 const PREVIEW_DEFAULT_WIDTH = 420;
 const PREVIEW_MIN_WIDTH = 300;
 const PREVIEW_MAX_WIDTH = 900;
+const HTML_PREVIEW_MESSAGE_SOURCE = "pi-studio-html-preview";
+const HTML_ZOOM_MIN = 0.5;
+const HTML_ZOOM_MAX = 2;
+const HTML_ZOOM_WHEEL_SENSITIVITY = 1000;
+
+type HtmlElementSnapshot = {
+  selector?: string;
+  tagName?: string;
+  id?: string;
+  classes?: string;
+  text?: string;
+  outerHTML?: string;
+  styles?: Record<string, string | number>;
+};
+
+function formatHtmlElementReference(element: HtmlElementSnapshot, language: string): string {
+  const selector = String(element.selector || "").trim() || "(unknown selector)";
+  const tagName = String(element.tagName || "element").trim().toLowerCase();
+  const text = String(element.text || "").trim().replace(/`/g, "'") || "(no visible text)";
+  const outerHTML = String(element.outerHTML || "").trim().replace(/`/g, "'");
+  const styles = Object.entries(element.styles || {})
+    .filter(([, value]) => value !== "" && value !== undefined && value !== null)
+    .map(([name, value]) => `${name}: ${value}`)
+    .join("; ");
+  const label = language === "zh" ? "已选中的 HTML 元素" : "Selected HTML element";
+  const instruction = language === "zh" ? "请针对这个元素进行修改：" : "Please modify this element:";
+  return [
+    `[${label}]`,
+    instruction,
+    `- selector: \`${selector.replace(/`/g, "'")}\``,
+    `- tag: <${tagName}>`,
+    `- text: ${JSON.stringify(text)}`,
+    outerHTML ? `- HTML: \`${outerHTML}\`` : "",
+    styles ? `- current styles: ${styles}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+function updateHtmlElementSource(source: string, selector: string, innerHTML: string): string | null {
+  if (!source || !selector) return null;
+  try {
+    const document = new DOMParser().parseFromString(source, "text/html");
+    const target = document.querySelector(selector);
+    if (!target) return null;
+    target.innerHTML = innerHTML;
+
+    const bom = source.startsWith("\uFEFF") ? "\uFEFF" : "";
+    const doctype = source.match(/^\uFEFF?\s*(<!doctype[^>]*>)/i)?.[1] || "";
+    const lineEnding = source.includes("\r\n") ? "\r\n" : "\n";
+    const trailingLineEnding = /\r?\n\s*$/.test(source) ? lineEnding : "";
+    return `${bom}${doctype ? `${doctype}${lineEnding}` : ""}${document.documentElement.outerHTML}${trailingLineEnding}`;
+  } catch {
+    return null;
+  }
+}
 
 function clampPreviewWidth(width: number): number {
   const sidebarWidth = document.querySelector<HTMLElement>(".sidebar")?.getBoundingClientRect().width || 0;
@@ -43,9 +97,40 @@ export function Preview() {
   const openPreview = useStore((s) => s.openPreview);
   const toggleExpanded = useStore((s) => s.togglePreviewExpanded);
   const close = useStore((s) => s.closePreview);
+  const activeThreadId = useStore((s) => s.activeThreadId);
   const language = useStore((s) => s.config?.language || "en");
   const [previewWidth, setPreviewWidth] = useState(initialPreviewWidth);
+  const [htmlAnnotationMode, setHtmlAnnotationMode] = useState(false);
+  const [htmlEditMode, setHtmlEditMode] = useState(false);
+  const [selectedHtmlTag, setSelectedHtmlTag] = useState<string | null>(null);
   const resizeRef = useRef<{ startX: number; startWidth: number; width: number; element: HTMLDivElement } | null>(null);
+
+  useEffect(() => {
+    setHtmlAnnotationMode(false);
+    setHtmlEditMode(false);
+    setSelectedHtmlTag(null);
+  }, [path]);
+
+  const handleHtmlElementSelected = useCallback((element: HtmlElementSnapshot) => {
+    setHtmlEditMode(false);
+    setSelectedHtmlTag(element.tagName ? `<${element.tagName.toLowerCase()}>` : null);
+    if (!activeThreadId) return;
+    window.dispatchEvent(new CustomEvent("pi-studio-html-element-reference", {
+      detail: {
+        threadId: activeThreadId,
+        reference: formatHtmlElementReference(element, language),
+        element,
+      },
+    }));
+  }, [activeThreadId, language]);
+
+  const handleHtmlAnnotationModeChange = useCallback((enabled: boolean) => {
+    setHtmlAnnotationMode(enabled);
+    if (!enabled) {
+      setHtmlEditMode(false);
+      setSelectedHtmlTag(null);
+    }
+  }, []);
 
   useEffect(() => {
     const onPointerMove = (event: PointerEvent) => {
@@ -126,6 +211,7 @@ export function Preview() {
 
   if (!open) return null;
   const name = path?.split(/[\\/]/).pop() || "Preview";
+  const htmlCanEdit = payload?.kind === "html" && Boolean(path && payload.text && !payload.truncated);
 
   return (
     <aside
@@ -152,6 +238,40 @@ export function Preview() {
         <span className="preview-title" title={path || ""}>{name}</span>
         {payload && <span className="muted preview-size">{formatBytes(payload.size)}</span>}
         {payload && <span className="preview-kind">{previewKindLabel(payload)}</span>}
+        {payload?.kind === "html" && (
+          <>
+            <button
+              className={`iconbtn preview-annotate-btn ${htmlAnnotationMode ? "on" : ""}`}
+              title={language === "zh" ? "选择 HTML 元素并引用到输入框" : "Select an HTML element and reference it in the composer"}
+              aria-label={language === "zh" ? "选择 HTML 元素" : "Select HTML element"}
+              aria-pressed={htmlAnnotationMode}
+              onClick={() => handleHtmlAnnotationModeChange(!htmlAnnotationMode)}
+            >
+              <SelectArrow size={15} />
+            </button>
+            {htmlAnnotationMode && (
+              <>
+                <button
+                  className={`iconbtn preview-annotate-btn preview-edit-btn ${htmlEditMode ? "on" : ""}`}
+                  title={selectedHtmlTag
+                    ? language === "zh" ? "编辑当前选中的 HTML 元素" : "Edit the selected HTML element"
+                    : language === "zh" ? "先选择一个 HTML 元素" : "Select an HTML element first"}
+                  aria-label={language === "zh" ? "编辑 HTML 元素" : "Edit HTML element"}
+                  aria-pressed={htmlEditMode}
+                  disabled={!htmlCanEdit || !selectedHtmlTag}
+                  onClick={() => setHtmlEditMode((value) => !value)}
+                >
+                  <Edit size={14} />
+                </button>
+                <span className={`preview-annotation-status ${htmlEditMode ? "editing" : ""}`}>
+                  {htmlEditMode
+                    ? language === "zh" ? "编辑中" : "Editing"
+                    : selectedHtmlTag || (language === "zh" ? "点击元素" : "Click an element")}
+                </span>
+              </>
+            )}
+          </>
+        )}
         {!expanded ? (
           <button
             className="iconbtn preview-expand-btn"
@@ -187,7 +307,19 @@ export function Preview() {
         </button>
       </div>
       <div className={`preview-body ${payload?.kind === "html" ? "html-preview-active" : ""}`}>
-        {loading ? <div className="pv-loading"><span className="spinner" /></div> : <PreviewBody payload={payload} language={language} />}
+        {loading ? <div className="pv-loading"><span className="spinner" /></div> : (
+          <PreviewBody
+            payload={payload}
+            path={path}
+            projectRoot={root}
+            language={language}
+            htmlAnnotationMode={htmlAnnotationMode}
+            htmlEditMode={htmlEditMode}
+            onHtmlElementSelected={handleHtmlElementSelected}
+            onHtmlAnnotationModeChange={handleHtmlAnnotationModeChange}
+            onHtmlEditModeChange={setHtmlEditMode}
+          />
+        )}
       </div>
     </aside>
   );
@@ -203,7 +335,27 @@ function previewKindLabel(payload: any): string {
   return (payload.lang || payload.ext?.slice(1) || "FILE").toUpperCase();
 }
 
-function PreviewBody({ payload, language }: { payload: any; language: string }) {
+function PreviewBody({
+  payload,
+  path,
+  projectRoot,
+  language,
+  htmlAnnotationMode,
+  htmlEditMode,
+  onHtmlElementSelected,
+  onHtmlAnnotationModeChange,
+  onHtmlEditModeChange,
+}: {
+  payload: any;
+  path?: string | null;
+  projectRoot?: string | null;
+  language: string;
+  htmlAnnotationMode: boolean;
+  htmlEditMode: boolean;
+  onHtmlElementSelected: (element: HtmlElementSnapshot) => void;
+  onHtmlAnnotationModeChange: (enabled: boolean) => void;
+  onHtmlEditModeChange: (editing: boolean) => void;
+}) {
   if (!payload) {
     return (
       <div className="pv-empty">
@@ -221,7 +373,21 @@ function PreviewBody({ payload, language }: { payload: any; language: string }) 
     case "markdown":
       return <div className="pv-md"><Markdown text={payload.text || ""} /></div>;
     case "html":
-      return <HtmlPreview url={payload.previewUrl} language={language} />;
+      return (
+        <HtmlPreview
+          url={payload.previewUrl}
+          path={path}
+          projectRoot={projectRoot}
+          sourceText={payload.text}
+          sourceTruncated={payload.truncated}
+          language={language}
+          annotationMode={htmlAnnotationMode}
+          editMode={htmlEditMode}
+          onElementSelected={onHtmlElementSelected}
+          onAnnotationModeChange={onHtmlAnnotationModeChange}
+          onEditModeChange={onHtmlEditModeChange}
+        />
+      );
     case "image":
       return <div className="pv-img"><img src={`data:${payload.mime};base64,${payload.base64}`} alt={payload.name} /></div>;
     case "docx":
@@ -292,15 +458,226 @@ function CodePreview({
   );
 }
 
-function HtmlPreview({ url, language }: { url?: string; language: string }) {
+function HtmlPreview({
+  url,
+  path,
+  projectRoot,
+  sourceText,
+  sourceTruncated,
+  language,
+  annotationMode,
+  editMode,
+  onElementSelected,
+  onAnnotationModeChange,
+  onEditModeChange,
+}: {
+  url?: string;
+  path?: string | null;
+  projectRoot?: string | null;
+  sourceText?: string;
+  sourceTruncated?: boolean;
+  language: string;
+  annotationMode: boolean;
+  editMode: boolean;
+  onElementSelected: (element: HtmlElementSnapshot) => void;
+  onAnnotationModeChange: (enabled: boolean) => void;
+  onEditModeChange: (editing: boolean) => void;
+}) {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const mountedRef = useRef(true);
+  const sourceRef = useRef(sourceText || "");
+  const pendingSourceRef = useRef<string | null>(null);
+  const saveTimerRef = useRef<number | null>(null);
+  const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const [zoom, setZoom] = useState(1);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const canEdit = Boolean(path && sourceText && !sourceTruncated);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const flushPendingSave = useCallback(() => {
+    const html = pendingSourceRef.current;
+    if (html === null || !path) return;
+    pendingSourceRef.current = null;
+    const save = () => window.pi.app.savePreviewHtml({
+      absPath: path,
+      projectRoot: projectRoot || undefined,
+      html,
+    });
+    saveQueueRef.current = saveQueueRef.current
+      .catch(() => undefined)
+      .then(save)
+      .then(
+        () => {
+          if (mountedRef.current && pendingSourceRef.current === null) setSaveStatus("saved");
+        },
+        () => {
+          if (mountedRef.current && pendingSourceRef.current === null) setSaveStatus("error");
+        },
+      );
+  }, [path, projectRoot]);
+
+  useEffect(() => {
+    if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = null;
+    flushPendingSave();
+    pendingSourceRef.current = null;
+    sourceRef.current = sourceText || "";
+    setSaveStatus("idle");
+  }, [flushPendingSave, sourceText, url]);
+
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+      flushPendingSave();
+    };
+  }, [flushPendingSave]);
+
+  const scheduleHtmlSave = useCallback((selector: string, innerHTML: string) => {
+    if (!canEdit || !path) return;
+    const nextSource = updateHtmlElementSource(sourceRef.current, selector, innerHTML);
+    if (!nextSource) {
+      setSaveStatus("error");
+      return;
+    }
+    sourceRef.current = nextSource;
+    pendingSourceRef.current = nextSource;
+    setSaveStatus("saving");
+    if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = null;
+      flushPendingSave();
+    }, 400);
+  }, [canEdit, flushPendingSave, path]);
+
+  useEffect(() => {
+    setZoom(1);
+  }, [url]);
+
+  const clampZoom = (value: number) => Math.max(HTML_ZOOM_MIN, Math.min(HTML_ZOOM_MAX, value));
+  const stepZoom = (direction: -1 | 1) => setZoom((current) => clampZoom(current + direction * 0.05));
+  const handleZoomWheel = useCallback((deltaY: number) => {
+    if (!Number.isFinite(deltaY) || deltaY === 0) return;
+    const delta = Math.max(-0.2, Math.min(0.2, -deltaY / HTML_ZOOM_WHEEL_SENSITIVITY));
+    setZoom((current) => clampZoom(current + delta));
+  }, []);
+
+  const syncAnnotationMode = useCallback(() => {
+    iframeRef.current?.contentWindow?.postMessage(
+      {
+        source: HTML_PREVIEW_MESSAGE_SOURCE,
+        type: "set-mode",
+        enabled: annotationMode,
+        editable: canEdit,
+        editMode: editMode && canEdit,
+      },
+      "*",
+    );
+  }, [annotationMode, canEdit, editMode]);
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const frame = iframeRef.current;
+      const data = event.data;
+      if (!frame || event.source !== frame.contentWindow || !data || data.source !== HTML_PREVIEW_MESSAGE_SOURCE) return;
+      if (data.type === "ready") syncAnnotationMode();
+      if (data.type === "zoom-wheel" && typeof data.deltaY === "number") handleZoomWheel(data.deltaY);
+      if (data.type === "mode-state" && typeof data.enabled === "boolean") {
+        onAnnotationModeChange(data.enabled);
+        onEditModeChange(data.enabled && data.editing === true);
+      }
+      if (data.type === "element-selected" && data.element && typeof data.element === "object") {
+        onElementSelected(data.element as HtmlElementSnapshot);
+      }
+      if (data.type === "edit-state" && typeof data.editing === "boolean") {
+        onEditModeChange(data.editing);
+      }
+      if (data.type === "element-edited" && typeof data.selector === "string" && typeof data.innerHTML === "string") {
+        scheduleHtmlSave(data.selector, data.innerHTML);
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [handleZoomWheel, onAnnotationModeChange, onEditModeChange, onElementSelected, scheduleHtmlSave, syncAnnotationMode]);
+
+  useEffect(() => {
+    if (!canEdit && editMode) onEditModeChange(false);
+  }, [canEdit, editMode, onEditModeChange]);
+
+  useEffect(() => {
+    syncAnnotationMode();
+  }, [url, syncAnnotationMode]);
+
   if (!url) return <div className="pv-unsupported">{language === "zh" ? "无法创建 HTML 预览地址。" : "Could not create the HTML preview URL."}</div>;
   return (
     <div className="pv-html">
+      <div className="pv-html-toolbar" role="group" aria-label={language === "zh" ? "HTML 预览缩放" : "HTML preview zoom"}>
+        {saveStatus !== "idle" && (
+          <span className={`pv-html-save-status ${saveStatus}`} role="status">
+            {saveStatus === "saving"
+              ? language === "zh" ? "保存中" : "Saving"
+              : saveStatus === "saved"
+                ? language === "zh" ? "已保存" : "Saved"
+                : language === "zh" ? "保存失败" : "Save failed"}
+          </span>
+        )}
+        <button
+          className="iconbtn preview-zoom-btn"
+          title={language === "zh" ? "缩小预览" : "Zoom out preview"}
+          aria-label={language === "zh" ? "缩小预览" : "Zoom out preview"}
+          disabled={zoom <= HTML_ZOOM_MIN}
+          onClick={() => stepZoom(-1)}
+        >
+          <Minus size={13} />
+        </button>
+        <input
+          className="preview-zoom-range"
+          type="range"
+          min={HTML_ZOOM_MIN}
+          max={HTML_ZOOM_MAX}
+          step="any"
+          value={zoom}
+          aria-label={language === "zh" ? "HTML 预览缩放比例" : "HTML preview zoom level"}
+          aria-valuetext={`${Math.round(zoom * 100)}%`}
+          onChange={(event) => setZoom(clampZoom(Number(event.target.value)))}
+        />
+        <button
+          className="preview-zoom-value"
+          title={language === "zh" ? "恢复 100%" : "Reset to 100%"}
+          aria-label={language === "zh" ? "恢复 HTML 预览到 100%" : "Reset HTML preview to 100%"}
+          onClick={() => setZoom(1)}
+        >
+          {Math.round(zoom * 100)}%
+        </button>
+        <button
+          className="iconbtn preview-zoom-btn"
+          title={language === "zh" ? "放大预览" : "Zoom in preview"}
+          aria-label={language === "zh" ? "放大预览" : "Zoom in preview"}
+          disabled={zoom >= HTML_ZOOM_MAX}
+          onClick={() => stepZoom(1)}
+        >
+          <Plus size={13} />
+        </button>
+      </div>
       <iframe
+        ref={iframeRef}
         key={url}
         title="html-preview"
         src={url}
         sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-downloads allow-pointer-lock"
+        style={{
+          width: `${100 / zoom}%`,
+          height: `${100 / zoom}%`,
+          transform: `scale(${zoom})`,
+          transformOrigin: "top left",
+        }}
+        onLoad={syncAnnotationMode}
       />
     </div>
   );

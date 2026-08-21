@@ -18,12 +18,29 @@ for (const command of allow) {
   assert.equal(classifyShellCommand(command).risk, "allow", `expected read-only allow: ${command}`);
 }
 
-const approval = [
+const allowProjectOperations = [
   "npm run build",
   "npm run typecheck",
+  "npm run test -- --runInBand",
   "python build_dashboard.py",
   "node scripts/build.js",
   "Set-Content output.txt ok",
+  "Set-Content -Path src/generated.css -Value body",
+  "Set-Content ../outside.txt ok",
+  "Copy-Item src/input.txt dist/output.txt",
+  "echo built > dist/status.txt",
+  "Remove-Item output.xlsx",
+];
+for (const command of allowProjectOperations) {
+  assert.equal(classifyShellCommand(command).risk, "allow", `expected low-risk project operation to auto-allow: ${command}`);
+}
+
+const approval = [
+  "npm install",
+  "npm run clean",
+  "python dangerous.py",
+  "node scripts/clean.js",
+  "some-unknown-command --flag",
   "curl https://example.com/data.json",
 ];
 for (const command of approval) {
@@ -32,6 +49,16 @@ for (const command of approval) {
 
 const always = [
   "rm -rf build",
+  "rm .",
+  "Remove-Item -Recurse dist",
+  "rmdir dist",
+  "rm ../outside.txt",
+  "Set-Content .env ok",
+  "Set-Content .git/config ok",
+  "echo token > .env.local",
+  "node ../outside.js",
+  "node scripts/build.js ../outside.txt",
+  "node scripts/build.js --output=../outside.txt",
   "git reset --hard HEAD~1",
   "git push origin main",
   "npm publish",
@@ -51,8 +78,7 @@ assert.match(inlinePython.reasonZh, /内联 Python/);
 assert.doesNotMatch(inlinePython.reason, /Destructive, privileged, system/i);
 
 const deleteCommand = classifyShellCommand("Remove-Item output.xlsx");
-assert.match(deleteCommand.reason, /deletion/i);
-assert.match(deleteCommand.reasonZh, /删除/);
+assert.equal(deleteCommand.risk, "allow", "a single project-local file deletion should be auto-allowed");
 
 const multiline = "ls\npython dangerous.py";
 assert.deepEqual(parseShellCommand(multiline).segments, ["ls", "python dangerous.py"]);
@@ -88,19 +114,29 @@ function makeHarness(selectChoice) {
 }
 
 const exact = makeHarness((_title, options) => options.find((option) => option.startsWith("Allow this exact")));
-await exact.call("bash", { command: "npm run build" });
-await exact.call("bash", { command: "npm run build" });
+await exact.call("bash", { command: "npm install" });
+await exact.call("bash", { command: "npm install" });
 assert.equal(exact.calls(), 1, "exact command approval should be remembered for the thread");
 
 const prefix = makeHarness((_title, options) => options.find((option) => option.startsWith("Allow prefix")));
-await prefix.call("bash", { command: "npm run test -- --runInBand" });
-await prefix.call("bash", { command: "npm run test -- --watch=false" });
+await prefix.call("bash", { command: "npm run clean -- --cache" });
+await prefix.call("bash", { command: "npm run clean -- --force" });
 assert.equal(prefix.calls(), 1, "approved project command prefix should be remembered for the thread");
 
 const destructive = makeHarness((_title, options) => options[0]);
 await destructive.call("bash", { command: "rm -rf build" });
 await destructive.call("bash", { command: "rm -rf build" });
 assert.equal(destructive.calls(), 2, "destructive operations must never be cached");
+
+const fileBoundary = makeHarness((_title, options) => options[0]);
+await fileBoundary.call("write", { path: "src/generated.ts", content: "export {}" });
+assert.equal(fileBoundary.calls(), 0, "project-local write should not require approval");
+await fileBoundary.call("write", { path: "../outside.txt", content: "outside" });
+assert.equal(fileBoundary.calls(), 0, "an explicit non-sensitive external write should not require approval");
+await fileBoundary.call("edit", { path: ".env", oldText: "x", newText: "y" });
+await fileBoundary.call("edit", { path: ".git/config", oldText: "x", newText: "y" });
+await fileBoundary.call("write", { content: "missing path" });
+assert.equal(fileBoundary.calls(), 3, "sensitive and unverifiable file changes must require fallback approval");
 
 const extensionTool = makeHarness((_title, options) => options.find((option) => option.startsWith("Allow tool")));
 await extensionTool.call("custom_lookup", { query: "one" });

@@ -18,6 +18,7 @@ import type {
   ThreadState,
   Toast,
   ToolRun,
+  ViewAttachment,
   ViewMessage,
 } from "./lib/types";
 import { cleanOutput, extensionsAlreadyLatest, hasLibuvAssertion, lastLine, stripAnsi } from "./lib/update";
@@ -49,14 +50,62 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
   };
 }
 
+export interface ParsedUserMessage {
+  text: string;
+  attachments: ViewAttachment[];
+}
+
+/**
+ * File attachments are supplied to Pi as an internal text envelope because
+ * the runtime accepts images but not local file paths. Keep that envelope out
+ * of the user bubble and turn it into the attachment metadata the renderer
+ * can display beside the user's text.
+ */
+export function parseUserMessage(text: string): ParsedUserMessage {
+  const normalized = (text || "").replace(/\r\n/g, "\n");
+  const attachments: ViewAttachment[] = [];
+  const fileBlock = /<file\b([^>]*?)\/>|<file\b([^>]*)>([\s\S]*?)<\/file>/gi;
+  const readAttribute = (attrs: string, name: string): string | undefined => {
+    const match = attrs.match(new RegExp(`(?:^|\\s)${name}="([^"]*)"`, "i"));
+    return match?.[1];
+  };
+
+  let visible = "";
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = fileBlock.exec(normalized))) {
+    const attrs = match[1] || match[2] || "";
+    const name = readAttribute(attrs, "name");
+    // Do not consume arbitrary user-authored <file> markup without the
+    // attribute emitted by processAttachments().
+    if (!name) continue;
+
+    visible += normalized.slice(cursor, match.index);
+    cursor = fileBlock.lastIndex;
+    const attachment: ViewAttachment = { name };
+    const path = readAttribute(attrs, "path");
+    const note = readAttribute(attrs, "note");
+    const error = readAttribute(attrs, "error");
+    if (path) attachment.path = path;
+    if (note) attachment.note = note;
+    if (error) attachment.error = error;
+    attachments.push(attachment);
+  }
+
+  if (!attachments.length) return { text: normalized, attachments };
+  visible += normalized.slice(cursor);
+  return { text: visible.trim(), attachments };
+}
+
 /** Match the command typed by the user to Pi's expanded skill message. Pi
  * persists/emits the latter, while the renderer shows the former optimistically
  * before the first RPC event arrives. */
 function matchesOptimisticUserMessage(optimisticText: string, serverText: string): boolean {
   const normalize = (value: string) => value.replace(/\r\n/g, "\n").trim();
-  if (normalize(optimisticText) === normalize(serverText)) return true;
+  const visibleServerText = parseUserMessage(serverText).text;
+  if (normalize(optimisticText) === normalize(visibleServerText)) return true;
 
-  const skill = parseSkillBlock(serverText);
+  const skill = parseSkillBlock(visibleServerText);
   if (!skill) return false;
   const invocation = normalize(optimisticText).match(/^\/skill:([^\s]+)(?:[ \t]+([\s\S]*))?$/i);
   if (!invocation) return false;
@@ -70,8 +119,20 @@ function matchesOptimisticUserMessage(optimisticText: string, serverText: string
 /** Replace Pi's expanded skill envelope with the actual user request for
  * titles and previews. A skill without extra text falls back to its name. */
 export function getDisplayUserPrompt(text: string): string {
-  const skill = parseSkillBlock(text);
-  return skill ? skill.userMessage || `skill: ${skill.name}` : text;
+  const visibleText = parseUserMessage(text).text;
+  const skill = parseSkillBlock(visibleText);
+  return skill ? skill.userMessage || `skill: ${skill.name}` : visibleText;
+}
+
+function mergeServerAttachments(server: ViewAttachment[], optimistic: ViewAttachment[] | undefined): ViewAttachment[] {
+  if (!server.length) return optimistic || [];
+  if (!optimistic?.length) return server;
+  return server.map((attachment, index) => {
+    if (attachment.path) return attachment;
+    const sameName = optimistic.find((candidate) => candidate.name.toLowerCase() === attachment.name.toLowerCase());
+    const fallback = sameName || optimistic[index];
+    return fallback ? { ...attachment, path: fallback.path } : attachment;
+  });
 }
 
 /** Keep automation session titles aligned with the selected UI language,
@@ -568,7 +629,15 @@ function historyToView(
   (messages || []).forEach((m, i) => {
     if (!m) return;
     if (m.role === "user") {
-      views.push({ key: `hu-${i}`, role: "user", text: textOfContent(m.content), images: imagesOfContent(m.content), timestamp: m.timestamp });
+      const parsed = parseUserMessage(textOfContent(m.content));
+      views.push({
+        key: `hu-${i}`,
+        role: "user",
+        text: parsed.text,
+        images: imagesOfContent(m.content),
+        attachments: parsed.attachments,
+        timestamp: m.timestamp,
+      });
     } else if (m.role === "assistant") {
       const blocks = blocksOfContent(m.content);
       for (const b of blocks) {
@@ -608,6 +677,15 @@ function pendingToArgs(p: PendingFollowUp): {
   const imgs = p.images.map((im) => ({ data: im.base64, mimeType: im.mimeType }));
   const atts = p.files.map((f) => ({ abs: f.abs, name: f.name }));
   return { imgs: imgs.length ? imgs : undefined, atts: atts.length ? atts : undefined };
+}
+
+function pendingPromptText(p: PendingFollowUp): string {
+  const text = p.text.trim();
+  const references = (p.htmlReferences || [])
+    .map((reference) => reference.reference.trim())
+    .filter(Boolean)
+    .join("\n\n");
+  return text ? (references ? `${text}\n\n${references}` : text) : references;
 }
 
 function emptyThread(cwd: string): ThreadState {
@@ -668,6 +746,7 @@ function reduceThread(t: ThreadState, event: any): ThreadState {
       if (!m) return t;
       if (m.role === "user") {
         const serverText = textOfContent(m.content);
+        const parsedServer = parseUserMessage(serverText);
         const serverImages = imagesOfContent(m.content);
         let optimisticIndex = -1;
         for (let i = t.messages.length - 1; i >= 0; i--) {
@@ -686,15 +765,23 @@ function reduceThread(t: ThreadState, event: any): ThreadState {
           const promoted: ViewMessage = {
             ...optimistic,
             key: `u-${uid()}`,
-            text: serverText || optimistic.text,
+            text: parsedServer.text || optimistic.text,
             images: serverImages.length ? serverImages : optimistic.images,
+            attachments: mergeServerAttachments(parsedServer.attachments, optimistic.attachments),
             timestamp: m.timestamp,
           };
           const messages = [...t.messages];
           messages[optimisticIndex] = promoted;
           return { ...t, messages };
         }
-        const view: ViewMessage = { key: `u-${uid()}`, role: "user", text: serverText, images: serverImages, timestamp: m.timestamp };
+        const view: ViewMessage = {
+          key: `u-${uid()}`,
+          role: "user",
+          text: parsedServer.text,
+          images: serverImages,
+          attachments: parsedServer.attachments,
+          timestamp: m.timestamp,
+        };
         return { ...t, messages: [...t.messages, view] };
       }
       if (m.role === "assistant") {
@@ -1107,7 +1194,7 @@ function scheduleEventFlush(): void {
       if (p) {
         st.setPendingFollowUp(threadId, null);
         const { imgs, atts } = pendingToArgs(p);
-        st.sendPrompt(threadId, p.text, imgs, atts);
+        st.sendPrompt(threadId, pendingPromptText(p), imgs, atts);
       }
       // Message events do not include their persisted session entry ids.
       // Refresh once the turn settles so the Agent reply's Fork/Clone actions
@@ -1641,6 +1728,7 @@ export const useStore = create<PiStore>()((set, get) => ({
       role: "user",
       text: trimmed,
       images: (images || []).map((im) => ({ dataUrl: `data:${im.mimeType};base64,${im.data}`, mimeType: im.mimeType })),
+      attachments: (attachments || []).map((file) => ({ name: file.name, path: file.abs })),
       timestamp: Date.now(),
       sendKind: wasStreaming ? (mode === "followUp" ? "followUp" : "steer") : undefined,
     };
@@ -1714,7 +1802,7 @@ export const useStore = create<PiStore>()((set, get) => ({
     if (!p) return;
     get().setPendingFollowUp(threadId, null);
     const { imgs, atts } = pendingToArgs(p);
-    await get().sendPrompt(threadId, p.text, imgs, atts, "steer");
+    await get().sendPrompt(threadId, pendingPromptText(p), imgs, atts, "steer");
   },
 
   abortThread: async (id) => {
@@ -2229,7 +2317,7 @@ export const useStore = create<PiStore>()((set, get) => ({
       await window.pi.thread.setPermission({ threadId, permission: level });
       const zh = get().config?.language === "zh";
       get().pushToast("info", level === "sandbox"
-        ? zh ? "已切换到沙盒（非只读命令及项目外写入需确认）。" : "Switched to sandbox. Non-read-only commands and writes outside the project require confirmation."
+        ? zh ? "已切换到沙盒（低风险明确操作自动执行，危险、敏感、外部脚本及无法确认的操作需确认）。" : "Switched to sandbox. Low-risk explicit operations run automatically; destructive, sensitive, external-code, and uncertain actions require confirmation."
         : zh ? "已切换到完全权限。" : "Switched to full access.");
     } catch (e: any) {
       get().pushToast("error", "切换权限失败：" + (e?.message || e));

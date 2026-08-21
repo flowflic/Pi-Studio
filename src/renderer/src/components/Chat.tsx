@@ -3,11 +3,12 @@ import { getDisplayThreadTitle, normalizeThreadFile, parseSkillBlock, useStore }
 import { Markdown } from "../lib/markdown";
 import { formatClock, formatTokens } from "../lib/format";
 import { collectFileArtifacts } from "../lib/artifacts";
+import { parseHtmlReferenceText } from "../lib/html-reference";
 import { useOutsideClose } from "../lib/useOutsideClose";
-import type { ContentBlock, ToolRun, ViewMessage } from "../lib/types";
+import type { ContentBlock, HtmlElementReference, ToolRun, ViewMessage } from "../lib/types";
 import { Composer } from "./Composer";
 import { ExtUiPromptCard } from "./ExtUiPromptCard";
-import { Sidebar, PanelRight, Copy, ThumbUp, ThumbDown, Refresh, Edit, Folder, Files, Gauge, Branch } from "./icons";
+import { Sidebar, PanelRight, Copy, ThumbUp, ThumbDown, Refresh, Edit, Folder, Files, Gauge, Branch, ChevronRight } from "./icons";
 import appIconUrl from "../../../../resources/icon.png";
 
 const USER_MESSAGE_NAV_MIN_ITEMS = 6;
@@ -530,7 +531,19 @@ function MessageGroupInner({
 
   if (group.role === "user") {
     const m = group.items[0];
-    const skillBlock = m.text ? parseSkillBlock(m.text) : null;
+    const parsedHtml = m.text ? parseHtmlReferenceText(m.text) : { text: "", references: [] };
+    const skillBlock = parsedHtml.text ? parseSkillBlock(parsedHtml.text) : null;
+    const openAttachment = async (attachment: NonNullable<ViewMessage["attachments"]>[number]) => {
+      if (!attachment.path) return;
+      try {
+        const exists = await window.pi.app.fileExists(attachment.path);
+        if (!exists) return;
+      } catch {
+        // Let the preview panel report the read error if the existence probe
+        // is unavailable in the current environment.
+      }
+      await openPreview(attachment.path, cwd);
+    };
     return (
       <div className="msg user" data-user-message-key={group.key}>
         <div className="msg-user-stack">
@@ -546,13 +559,47 @@ function MessageGroupInner({
                 {skillBlock.userMessage && <div className="msg-user-text msg-user-skill-request">{skillBlock.userMessage}</div>}
               </>
             ) : (
-              m.text && <div className="msg-user-text">{m.text}</div>
+              parsedHtml.text && <div className="msg-user-text">{parsedHtml.text}</div>
+            )}
+            {parsedHtml.references.length > 0 && (
+              <div className="msg-html-references" aria-label={language === "zh" ? "HTML 元素引用" : "HTML element references"}>
+                {parsedHtml.references.map((reference) => (
+                  <HtmlReferenceCard key={reference.id} reference={reference} language={language} />
+                ))}
+              </div>
             )}
             {m.images && m.images.length > 0 && (
               <div className="msg-user-imgs">
                 {m.images.map((im, i) => (
                   <button key={i} className="msg-user-img-button" onClick={() => onPreviewImage(im.dataUrl)} title="图片预览">
                     <img className="msg-user-img" src={im.dataUrl} alt={language === "zh" ? "附件" : "attachment"} />
+                  </button>
+                ))}
+              </div>
+            )}
+            {m.attachments && m.attachments.length > 0 && (
+              <div className="msg-user-files" aria-label={language === "zh" ? "文件附件" : "File attachments"}>
+                {m.attachments.map((attachment, index) => (
+                  <button
+                    type="button"
+                    className="msg-user-file"
+                    key={`${attachment.name}-${index}`}
+                    disabled={!attachment.path}
+                    title={attachment.path ? language === "zh" ? "在 Pi Studio 中查看附件" : "View attachment in Pi Studio" : attachment.name}
+                    aria-label={attachment.path ? `${language === "zh" ? "查看附件" : "View attachment"}: ${attachment.name}` : attachment.name}
+                    onClick={() => void openAttachment(attachment)}
+                  >
+                    <span className="msg-user-file-icon" aria-hidden="true">
+                      <Files size={15} />
+                    </span>
+                    <span className="msg-user-file-copy">
+                      <span className="msg-user-file-name">{attachment.name}</span>
+                      <span className={`msg-user-file-meta${attachment.error ? " error" : ""}`}>
+                        {attachment.error
+                          ? language === "zh" ? "附件读取失败" : "Attachment unavailable"
+                          : language === "zh" ? "文件附件" : "File attachment"}
+                      </span>
+                    </span>
                   </button>
                 ))}
               </div>
@@ -744,6 +791,43 @@ const SkillInvocation = memo(function SkillInvocation({ name, language }: { name
   return (
     <div className="skill-invocation" role="status" aria-label={`${language === "zh" ? "技能" : "skill"}: ${name}`}>
         <span className="skill-invocation-label">{language === "zh" ? "技能" : "skill"}: {name}</span>
+    </div>
+  );
+});
+
+const HtmlReferenceCard = memo(function HtmlReferenceCard({
+  reference,
+  language,
+}: {
+  reference: HtmlElementReference;
+  language: "en" | "zh";
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const tag = reference.tagName ? `<${reference.tagName}>` : language === "zh" ? "HTML 元素" : "HTML element";
+  const selector = reference.selector || (language === "zh" ? "未提供选择器" : "No selector provided");
+  const detailLabel = language === "zh" ? "展开 HTML 元素详情" : "Expand HTML element details";
+
+  return (
+    <div className={`composer-html-reference msg-html-reference ${expanded ? "expanded" : ""}`}>
+      <div className="composer-html-reference-row">
+        <button
+          type="button"
+          className="composer-html-reference-toggle"
+          aria-expanded={expanded}
+          aria-label={`${detailLabel}: ${selector}`}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <ChevronRight className={`composer-html-reference-chevron ${expanded ? "open" : ""}`} size={13} />
+          <span className="composer-html-reference-badge">HTML</span>
+          <span className="composer-html-reference-tag">{tag}</span>
+          <code className="composer-html-reference-selector" title={selector}>{selector}</code>
+        </button>
+      </div>
+      {expanded && (
+        <pre className="composer-html-reference-code" aria-label={language === "zh" ? "HTML 元素引用详情" : "HTML element reference details"}>
+          {reference.reference}
+        </pre>
+      )}
     </div>
   );
 });

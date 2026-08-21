@@ -38,7 +38,7 @@ export interface ThreadSearchHit {
   matchCount: number;
 }
 
-/** Thread permission level. Sandbox gates risky shell, out-of-project writes, subagents, and unclassified extension tools; full is unrestricted. */
+/** Thread permission level. Sandbox auto-allows low-risk explicit operations and gates destructive, sensitive, external-code, subagent, and unclassified actions; full is unrestricted. */
 export type PermissionLevel = "sandbox" | "full";
 
 /** An installed pi package (from settings.json `packages`). */
@@ -126,6 +126,15 @@ export type ContentBlock =
   | { type: "thinking"; thinking: string }
   | { type: "toolCall"; id: string; name: string; arguments: any; contentIndex?: number };
 
+/** A local file carried by a user message. The path is retained for matching
+ * and future actions, but the chat bubble only needs to show the file name. */
+export interface ViewAttachment {
+  name: string;
+  path?: string;
+  note?: string;
+  error?: string;
+}
+
 export interface ViewMessage {
   /** stable key */
   key: string;
@@ -136,6 +145,7 @@ export interface ViewMessage {
   /** user/system plain text (may include image blocks for user) */
   text?: string;
   images?: { dataUrl: string; mimeType: string }[];
+  attachments?: ViewAttachment[];
   /** assistant structured blocks */
   blocks?: ContentBlock[];
   /** how a user message was submitted while the agent was working */
@@ -170,6 +180,7 @@ export interface PendingFollowUp {
   text: string;
   images: PendingImage[];
   files: PendingFile[];
+  htmlReferences?: HtmlElementReference[];
 }
 
 export interface ThreadState {
@@ -349,4 +360,15 @@ export interface PendingImage {
 export interface PendingFile {
   abs: string;
   name: string;
+}
+
+/** A selected HTML element kept as a structured composer reference. */
+export interface HtmlElementReference {
+  id: string;
+  reference: string;
+  selector?: string;
+  tagName?: string;
+  text?: string;
+  outerHTML?: string;
+  styles?: Record<string, string | number>;
 }

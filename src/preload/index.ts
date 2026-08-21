@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from "electron";
 import type { SkillHubSkill } from "../renderer/src/lib/types";
 
 /**
@@ -30,7 +30,18 @@ const api = {
     showOpenDialog: (kind: "folder" | "file" | "files") => ipcRenderer.invoke("app:showOpenDialog", kind),
     getFileTree: (cwd: string, rel?: string) => ipcRenderer.invoke("app:getFileTree", cwd, rel),
     fileExists: (absPath: string) => ipcRenderer.invoke("app:fileExists", absPath),
+    getPathForFile: (file: File) => {
+      try {
+        return webUtils.getPathForFile(file);
+      } catch {
+        return "";
+      }
+    },
+    stageClipboardFile: (args: { name?: string; mimeType?: string; data: string }) =>
+      ipcRenderer.invoke("app:stageClipboardFile", args),
     readPreview: (absPath: string, projectRoot?: string) => ipcRenderer.invoke("app:readPreview", absPath, projectRoot),
+    savePreviewHtml: (args: { absPath: string; projectRoot?: string; html: string }) =>
+      ipcRenderer.invoke("app:savePreviewHtml", args),
     showFileContextMenu: (absPath: string) => ipcRenderer.invoke("app:showFileContextMenu", absPath),
     updatePi: () => ipcRenderer.invoke("app:updatePi"),
     checkAppUpdate: () => ipcRenderer.invoke("app:checkAppUpdate"),
