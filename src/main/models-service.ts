@@ -1,4 +1,4 @@
-import { execFile, spawn } from "node:child_process";
+import { exec, execFile, spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -6,7 +6,7 @@ import { getConfig } from "./config";
 import { getAgentDir, getSessionsDir } from "./session-store";
 import { isAppManagedRuntime, resolvePiRuntime, runtimeKind } from "./pi-bridge";
 import { toPiRuntimeProvider, toPiRuntimeProviders, toSettingsProviders } from "./model-url-compat";
-import type { Diagnostics, ModelsFile, ProviderDef, ThinkingDefaults } from "../renderer/src/lib/types";
+import type { Diagnostics, ModelDef, ModelDiscoveryResult, ModelsFile, ProviderDef, ThinkingDefaults } from "../renderer/src/lib/types";
 
 /**
  * Safe read/write access to pi's `models.json` and the thinking-related slice
@@ -67,6 +67,150 @@ export function writeModelsProviders(providers: Record<string, ProviderDef>): Mo
   const next: Record<string, unknown> = { ...existing, providers: toPiRuntimeProviders(providers) };
   writeJsonAtomic(getModelsPath(), next);
   return next as ModelsFile;
+}
+
+/* ---------------- provider model discovery ---------------- */
+
+const MODEL_DISCOVERY_TIMEOUT_MS = 20_000;
+const MODEL_DISCOVERY_PAGE_LIMIT = 10;
+const MODEL_DISCOVERY_RESULT_LIMIT = 5_000;
+
+function trimSecret(message: string, secrets: string[]): string {
+  let result = message;
+  for (const secret of secrets) {
+    if (secret) result = result.split(secret).join("[redacted]");
+  }
+  return result.length > 600 ? result.slice(0, 597) + "..." : result;
+}
+
+function resolveCommand(command: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    exec(command, { windowsHide: true, timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+      if (error) reject(new Error(`Credential command failed: ${error.message}`));
+      else resolve(stdout.trim());
+    });
+  });
+}
+
+async function resolveProviderValue(value: string | undefined): Promise<string> {
+  const raw = value?.trim() || "";
+  if (!raw) return "";
+  if (raw.startsWith("$")) {
+    const name = raw.slice(1).trim();
+    const resolved = name ? process.env[name] : undefined;
+    if (!resolved) throw new Error(`Environment variable ${name || "(empty)"} is not set.`);
+    return resolved;
+  }
+  if (raw.startsWith("!")) {
+    const command = raw.slice(1).trim();
+    if (!command) throw new Error("Credential command is empty.");
+    const resolved = await resolveCommand(command);
+    if (!resolved) throw new Error("Credential command returned an empty value.");
+    return resolved;
+  }
+  return raw;
+}
+
+function modelListUrl(baseUrl: string): URL {
+  const url = new URL(baseUrl.trim());
+  url.pathname = `${url.pathname.replace(/\/+$/, "")}/models`;
+  return url;
+}
+
+function discoveryItems(payload: any): any[] {
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.models)) return payload.models;
+  if (Array.isArray(payload)) return payload;
+  return [];
+}
+
+function discoveredModel(item: any): ModelDef | null {
+  if (typeof item === "string") return item.trim() ? { id: item.trim(), name: item.trim() } : null;
+  const rawId = typeof item?.id === "string" ? item.id : typeof item?.name === "string" ? item.name : "";
+  const id = rawId.replace(/^models\//, "").trim();
+  if (!id) return null;
+  const displayName =
+    (typeof item?.display_name === "string" && item.display_name.trim()) ||
+    (typeof item?.displayName === "string" && item.displayName.trim()) ||
+    (typeof item?.name === "string" && !item.name.startsWith("models/") && item.name.trim()) ||
+    id;
+  return { id, name: displayName };
+}
+
+function discoveryError(payload: any, status: number): string {
+  const message = payload?.error?.message || payload?.error || payload?.message;
+  return typeof message === "string" && message.trim() ? message.trim() : `Model list request failed with HTTP ${status}.`;
+}
+
+/** Query the provider's standard model-list endpoint without saving the draft. */
+export async function discoverProviderModels(provider: ProviderDef): Promise<ModelDiscoveryResult> {
+  const secrets: string[] = [];
+  try {
+    if (!provider.baseUrl?.trim()) throw new Error("API URL is required.");
+    const apiKey = await resolveProviderValue(provider.apiKey);
+    if (apiKey) secrets.push(apiKey);
+    const headers = new Headers({ Accept: "application/json" });
+    if (provider.api === "anthropic-messages") {
+      if (apiKey) headers.set("x-api-key", apiKey);
+      headers.set("anthropic-version", "2023-06-01");
+    } else if (provider.api === "google-generative-ai") {
+      if (apiKey) headers.set("x-goog-api-key", apiKey);
+    } else if (apiKey && provider.authHeader !== false) {
+      headers.set("Authorization", `Bearer ${apiKey}`);
+    }
+    for (const [name, rawValue] of Object.entries(provider.headers || {})) {
+      const value = await resolveProviderValue(rawValue);
+      if (value) {
+        secrets.push(value);
+        headers.set(name, value);
+      }
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), MODEL_DISCOVERY_TIMEOUT_MS);
+    const byId = new Map<string, ModelDef>();
+    let nextUrl: URL | null = modelListUrl(provider.baseUrl);
+    try {
+      for (let page = 0; nextUrl && page < MODEL_DISCOVERY_PAGE_LIMIT && byId.size < MODEL_DISCOVERY_RESULT_LIMIT; page += 1) {
+        const response = await fetch(nextUrl, { method: "GET", headers, signal: controller.signal });
+        const text = await response.text();
+        let payload: any = null;
+        try {
+          payload = text ? JSON.parse(text) : {};
+        } catch {
+          throw new Error(response.ok ? "Provider returned an invalid model-list response." : `Model list request failed with HTTP ${response.status}.`);
+        }
+        if (!response.ok) throw new Error(discoveryError(payload, response.status));
+        for (const item of discoveryItems(payload)) {
+          const model = discoveredModel(item);
+          if (model && !byId.has(model.id)) byId.set(model.id, model);
+        }
+
+        const nextPageToken = typeof payload?.nextPageToken === "string" ? payload.nextPageToken : "";
+        const lastId = typeof payload?.last_id === "string" ? payload.last_id : "";
+        if (nextPageToken) {
+          const pageUrl: URL = new URL(nextUrl.toString());
+          pageUrl.searchParams.set("pageToken", nextPageToken);
+          nextUrl = pageUrl;
+        } else if (payload?.has_more === true && lastId) {
+          const pageUrl: URL = new URL(nextUrl.toString());
+          pageUrl.searchParams.set("after_id", lastId);
+          nextUrl = pageUrl;
+        } else {
+          nextUrl = null;
+        }
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    const models = Array.from(byId.values()).sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
+    if (models.length === 0) throw new Error("The provider returned no models.");
+    return { ok: true, models, message: `Found ${models.length} models.` };
+  } catch (error: any) {
+    const message = error?.name === "AbortError" ? "Model list request timed out after 20 seconds." : error?.message || String(error);
+    return { ok: false, models: [], message: trimSecret(message, secrets) };
+  }
 }
 
 export interface ModelAvailabilityResult {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from "react";
 import { useStore } from "../store";
-import type { ApiType, Diagnostics, ModelDef, ModelsFile, ProviderDef, ThinkingDefaults } from "../lib/types";
+import type { ApiType, Diagnostics, ModelDef, ModelDiscoveryResult, ModelsFile, ProviderDef, ThinkingDefaults } from "../lib/types";
 import { cleanOutput, hasLibuvAssertion, lastLine, stripAnsi } from "../lib/update";
 import { reasoningLevelLabel } from "../lib/reasoning";
 import { translateUiText } from "../lib/i18n";
@@ -14,6 +14,17 @@ import appIconUrl from "../../../../resources/icon.png";
 const API_TYPES: ApiType[] = ["openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai"];
 const THINK_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const TOKENS_PER_K = 1000;
+
+function mergeModels(existing: ModelDef[], discovered: ModelDef[]): { models: ModelDef[]; added: number } {
+  const byId = new Map(existing.filter((model) => model.id.trim()).map((model) => [model.id, model]));
+  let added = 0;
+  for (const model of discovered) {
+    if (byId.has(model.id)) continue;
+    byId.set(model.id, model);
+    added += 1;
+  }
+  return { models: Array.from(byId.values()), added };
+}
 
 function formatTokenLimitK(tokens?: number): string {
   const value = Number(tokens);
@@ -486,6 +497,7 @@ function ProviderCard({
   addModel,
   updateModel,
   deleteModel,
+  discoverModels,
 }: {
   k: string;
   def: ProviderDef;
@@ -497,11 +509,13 @@ function ProviderCard({
   addModel: () => void;
   updateModel: (i: number, p: Partial<ModelDef>) => void;
   deleteModel: (i: number) => void;
+  discoverModels: () => Promise<void>;
 }) {
   const [showKey, setShowKey] = useState(false);
   const [adv, setAdv] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [providerName, setProviderName] = useState(k);
+  const [discovering, setDiscovering] = useState(false);
   useEffect(() => {
     setProviderName(k);
     setRenaming(false);
@@ -616,11 +630,32 @@ function ProviderCard({
 
       <div className="set-models-head">
         <span>模型</span>
-        <button className="set-addline" onClick={addModel}>
-          <Plus size={13} /> 添加模型
-        </button>
+        <div className="set-model-actions">
+          <button
+            className="set-addline"
+            disabled={discovering}
+            onClick={async () => {
+              setDiscovering(true);
+              try {
+                await discoverModels();
+              } finally {
+                setDiscovering(false);
+              }
+            }}
+          >
+            {discovering ? <span className="spinner" /> : <Refresh size={13} />}
+            {language === "zh" ? "获取模型" : "Fetch models"}
+          </button>
+          <button className="set-addline" onClick={addModel}>
+            <Plus size={13} /> {language === "zh" ? "手动添加" : "Add manually"}
+          </button>
+        </div>
       </div>
-      {models.length === 0 && <div className="set-empty-mini">暂无模型，点击“添加模型”。</div>}
+      {models.length === 0 && (
+        <div className="set-empty-mini">
+          {language === "zh" ? "暂无模型，可从供应商自动获取或手动添加。" : "No models yet. Fetch them from the provider or add one manually."}
+        </div>
+      )}
       {models.map((m, i) => (
         <ModelRow
           key={i}
@@ -705,6 +740,7 @@ export function Settings() {
   const [paths, setPaths] = useState<{ agentDir: string; models: string; settings: string; auth: string } | null>(null);
   const [adding, setAdding] = useState(false);
   const [newProvider, setNewProvider] = useState<NewProviderDraft>(emptyNewProvider);
+  const [discoveringNewProvider, setDiscoveringNewProvider] = useState(false);
 
   // ---- pi update ----
   const [updating, setUpdating] = useState(false);
@@ -997,23 +1033,88 @@ export function Settings() {
       return { ...d, providers: p };
     });
   };
-  const confirmAddProvider = () => {
+  const fetchProviderModels = async (provider: ProviderDef): Promise<ModelDef[]> => {
+    const result = (await window.pi.settings.discoverModels(provider as Record<string, unknown>)) as ModelDiscoveryResult;
+    if (!result?.ok) throw new Error(result?.message || (language === "zh" ? "无法获取模型列表" : "Could not fetch the model list."));
+    return result.models || [];
+  };
+  const discoverModelsForProvider = async (k: string, provider: ProviderDef) => {
+    try {
+      const discovered = await fetchProviderModels(provider);
+      const added = mergeModels(provider.models || [], discovered).added;
+      setDraft((current) => {
+        const currentProvider = current.providers[k];
+        if (!currentProvider) return current;
+        const merged = mergeModels(currentProvider.models || [], discovered);
+        return {
+          ...current,
+          providers: { ...current.providers, [k]: { ...currentProvider, models: merged.models } },
+        };
+      });
+      pushToast(
+        "info",
+        language === "zh"
+          ? `已获取 ${discovered.length} 个模型，新增 ${added} 个。`
+          : `Fetched ${discovered.length} models; ${added} added.`,
+      );
+    } catch (error: any) {
+      pushToast("error", (language === "zh" ? "获取模型失败：" : "Failed to fetch models: ") + (error?.message || error));
+    }
+  };
+  const confirmAddProvider = (discovered: ModelDef[] = []): boolean => {
     const id = newProvider.id.trim();
     const baseUrl = newProvider.baseUrl.trim();
     const modelId = newProvider.modelId.trim();
-    if (!id) return pushToast("warning", language === "zh" ? "请输入供应商名称" : "Enter a provider name.");
-    if (!baseUrl) return pushToast("warning", language === "zh" ? "请输入 API 地址" : "Enter the API URL.");
-    if (!modelId) return pushToast("warning", language === "zh" ? "请输入模型 ID" : "Enter a model ID.");
-    if (draft.providers[id]) return pushToast("error", language === "zh" ? "该供应商名称已存在" : "That provider name already exists.");
+    if (!id) {
+      pushToast("warning", language === "zh" ? "请输入供应商名称" : "Enter a provider name.");
+      return false;
+    }
+    if (!baseUrl) {
+      pushToast("warning", language === "zh" ? "请输入 API 地址" : "Enter the API URL.");
+      return false;
+    }
+    if (!modelId && discovered.length === 0) {
+      pushToast("warning", language === "zh" ? "请输入模型 ID，或使用自动获取" : "Enter a model ID or use automatic discovery.");
+      return false;
+    }
+    if (draft.providers[id]) {
+      pushToast("error", language === "zh" ? "该供应商名称已存在" : "That provider name already exists.");
+      return false;
+    }
+    const initialModels = modelId ? mergeModels(discovered, [{ id: modelId, name: modelId }]).models : discovered;
     const provider: ProviderDef = {
       baseUrl,
       api: newProvider.api,
       apiKey: newProvider.apiKey.trim() || undefined,
-      models: [{ id: modelId, name: modelId }],
+      models: initialModels,
     };
     setDraft((d) => ({ ...d, providers: { ...d.providers, [id]: provider } }));
     setAdding(false);
     setNewProvider(emptyNewProvider());
+    return true;
+  };
+  const discoverAndAddProvider = async () => {
+    const id = newProvider.id.trim();
+    const baseUrl = newProvider.baseUrl.trim();
+    if (!id) return pushToast("warning", language === "zh" ? "请输入供应商名称" : "Enter a provider name.");
+    if (!baseUrl) return pushToast("warning", language === "zh" ? "请输入 API 地址" : "Enter the API URL.");
+    if (draft.providers[id]) return pushToast("error", language === "zh" ? "该供应商名称已存在" : "That provider name already exists.");
+    setDiscoveringNewProvider(true);
+    try {
+      const provider: ProviderDef = {
+        baseUrl,
+        api: newProvider.api,
+        apiKey: newProvider.apiKey.trim() || undefined,
+      };
+      const discovered = await fetchProviderModels(provider);
+      if (confirmAddProvider(discovered)) {
+        pushToast("info", language === "zh" ? `已获取并添加 ${discovered.length} 个模型。` : `Fetched and added ${discovered.length} models.`);
+      }
+    } catch (error: any) {
+      pushToast("error", (language === "zh" ? "获取模型失败：" : "Failed to fetch models: ") + (error?.message || error));
+    } finally {
+      setDiscoveringNewProvider(false);
+    }
   };
   const reloadModels = async () => {
     if (
@@ -1219,8 +1320,8 @@ export function Settings() {
                         <div className="set-addprov-title">{language === "zh" ? "新增模型供应商" : "Add model provider"}</div>
                         <div className="set-addprov-sub">
                           {language === "zh"
-                            ? "一次填写连接信息和首个模型，添加后仍可继续配置高级选项。"
-                            : "Set up the connection and first model in one step. Advanced options remain editable afterward."}
+                            ? "填写连接信息后可自动获取全部模型并添加；不支持列表接口时仍可手动填写模型 ID。"
+                            : "Enter connection details to fetch and add every model automatically. You can still enter a model ID when listing is unavailable."}
                         </div>
                       </div>
                       <button
@@ -1281,7 +1382,7 @@ export function Settings() {
                         />
                       </label>
                       <label className="set-addprov-field">
-                        <span>{language === "zh" ? "模型 ID" : "Model ID"}</span>
+                        <span>{language === "zh" ? "模型 ID（手动添加时）" : "Model ID (manual setup)"}</span>
                         <input
                           className="set-input"
                           placeholder="model-id"
@@ -1302,8 +1403,12 @@ export function Settings() {
                       >
                         {language === "zh" ? "取消" : "Cancel"}
                       </button>
-                      <button type="submit" className="set-btn primary">
-                        {language === "zh" ? "添加供应商" : "Add provider"}
+                      <button type="submit" className="set-btn" disabled={discoveringNewProvider}>
+                        {language === "zh" ? "手动添加" : "Add manually"}
+                      </button>
+                      <button type="button" className="set-btn primary" disabled={discoveringNewProvider} onClick={discoverAndAddProvider}>
+                        {discoveringNewProvider ? <span className="spinner" /> : <Refresh size={14} />}
+                        {language === "zh" ? "获取模型并添加" : "Fetch models & add"}
                       </button>
                     </div>
                   </form>
@@ -1324,6 +1429,7 @@ export function Settings() {
                     addModel={() => addModel(k)}
                     updateModel={(i, p) => updateModel(k, i, p)}
                     deleteModel={(i) => deleteModel(k, i)}
+                    discoverModels={() => discoverModelsForProvider(k, draft.providers[k])}
                   />
                 ))}
               </>

@@ -22,6 +22,7 @@ import {
   getDiagnostics,
   getModelsPath,
   getSettingsPath,
+  discoverProviderModels,
   readModelsFile,
   readThinking,
   testModelAvailability,
@@ -1762,6 +1763,9 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
 
   // ---- settings: models.json / settings.json / diagnostics ----------------
   ipcMain.handle("settings:getModels", () => readModelsFile());
+  ipcMain.handle("settings:discoverModels", (_e, provider: Record<string, unknown>) =>
+    discoverProviderModels(provider as any),
+  );
   ipcMain.handle(
     "settings:testModel",
     (_e, args: { providerId: string; provider: Record<string, unknown>; modelId: string }) =>

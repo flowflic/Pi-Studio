@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { getConfig } from "./config";
 import { resolvePiRuntime } from "./pi-bridge";
 import { getAgentDir } from "./session-store";
+import { resolveSkillsCliPath } from "./skills-cli-path";
 import type { SkillHubDetail, SkillHubSkill } from "../renderer/src/lib/types";
 
 const SKILLS_HOME = "https://skills.sh";
@@ -191,7 +192,7 @@ export async function getSkillDetails(skill: SkillHubSkill): Promise<SkillHubDet
 
 function skillsCliPath(): string {
   try {
-    return appRequire.resolve("skills/bin/cli.mjs");
+    return resolveSkillsCliPath(appRequire.resolve("skills/bin/cli.mjs"));
   } catch {
     throw new Error("The bundled skills CLI is unavailable. Reinstall Pi Studio or its dependencies.");
   }
@@ -205,17 +206,11 @@ function safeSegment(value: string, label: string): string {
   return normalized;
 }
 
-function runSkillsCli(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise(async (resolve, reject) => {
-    let runtime: { node: string; cli: string };
-    try {
-      runtime = await resolvePiRuntime(getConfig().piCliPath);
-    } catch (error) {
-      reject(error);
-      return;
-    }
-
-    const proc = spawn(runtime.node, [skillsCliPath(), ...args], {
+async function runSkillsCli(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const runtime = await resolvePiRuntime(getConfig().piCliPath);
+  const cliPath = skillsCliPath();
+  return new Promise((resolve, reject) => {
+    const proc = spawn(runtime.node, [cliPath, ...args], {
       cwd: getAgentDir(),
       env: { ...process.env, DISABLE_TELEMETRY: "1" },
       windowsHide: true,
@@ -240,7 +235,7 @@ function runSkillsCli(args: string[]): Promise<{ code: number | null; stdout: st
       clearTimeout(timer);
       reject(error);
     });
-    proc.on("exit", (code) => {
+    proc.on("close", (code) => {
       clearTimeout(timer);
       if (timedOut) stderr += `\nInstallation timed out after ${Math.round(INSTALL_TIMEOUT_MS / 1000)} seconds.`;
       resolve({ code, stdout, stderr });

@@ -121,6 +121,7 @@ const api = {
   },
   settings: {
     getModels: () => ipcRenderer.invoke("settings:getModels"),
+    discoverModels: (provider: Record<string, unknown>) => ipcRenderer.invoke("settings:discoverModels", provider),
     testModel: (args: { providerId: string; provider: Record<string, unknown>; modelId: string }) =>
       ipcRenderer.invoke("settings:testModel", args),
     saveModels: (providers: Record<string, unknown>) => ipcRenderer.invoke("settings:saveModels", providers),

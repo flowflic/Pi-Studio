@@ -670,6 +670,7 @@ body.sidebar-resizing * {
   min-height: 0;
 }
 .chat-scroll {
+  overflow-anchor: none;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -3945,6 +3946,18 @@ textarea.modal-input {
 .set-addline:hover {
   color: var(--accent);
   border-color: var(--accent);
+}
+.set-addline:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.set-model-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.set-model-actions .set-addline {
+  margin-top: 0;
 }
 .set-adv-toggle {
   background: transparent;

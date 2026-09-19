@@ -1,6 +1,6 @@
 {
   "name": "pi-studio",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "piRuntimeVersion": "0.84.1",
   "private": true,
   "license": "MIT",
@@ -20,6 +20,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.json",
     "test:permission": "node scripts/test-permission-gate.mjs",
     "test:html-reference": "node --experimental-strip-types scripts/test-html-reference.mjs",
+    "test:skills-cli": "node --experimental-strip-types scripts/test-skills-cli.mjs",
+    "test:chat-scroll": "electron scripts/test-chat-scroll.cjs",
     "bundle": "node scripts/bundle-runtime.mjs",
     "finalize-runtime": "node scripts/finalize-runtime.mjs",
     "pack": "npm run bundle && npm run build && electron-builder --dir && npm run finalize-runtime",
@@ -79,6 +81,9 @@
     },
     "files": [
       "out/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/**/*"
     ],
     "extraResources": [
       {

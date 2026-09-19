@@ -325,6 +325,13 @@ export interface ProviderDef {
   [key: string]: unknown;
 }
 
+/** Result of querying a provider's model-list endpoint. */
+export interface ModelDiscoveryResult {
+  ok: boolean;
+  models: ModelDef[];
+  message: string;
+}
+
 /** Top-level shape of ~/.pi/agent/models.json. */
 export interface ModelsFile {
   providers: Record<string, ProviderDef>;

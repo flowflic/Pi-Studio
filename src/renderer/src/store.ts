@@ -688,6 +688,20 @@ function pendingPromptText(p: PendingFollowUp): string {
   return text ? (references ? `${text}\n\n${references}` : text) : references;
 }
 
+/**
+ * Registered extension commands are handled by Pi outside the agent loop.
+ * They can complete successfully without emitting agent_start/agent_settled,
+ * so they must not leave the renderer in its optimistic streaming state.
+ */
+function isExtensionCommandPrompt(text: string, commands: any[] | undefined): boolean {
+  const match = text.trim().match(/^\/([^\s]+)/);
+  if (!match) return false;
+  const invocation = match[1];
+  return (commands || []).some((command) =>
+    command?.source === "extension" && String(command.name || "").trim() === invocation,
+  );
+}
+
 function emptyThread(cwd: string): ThreadState {
   return {
     cwd,
@@ -1721,7 +1735,9 @@ export const useStore = create<PiStore>()((set, get) => ({
     const hasImg = !!images && images.length > 0;
     const hasAtt = !!attachments && attachments.length > 0;
     if (!trimmed && !hasImg && !hasAtt) return;
-    const wasStreaming = !!get().threads[threadId]?.isStreaming;
+    const currentThread = get().threads[threadId];
+    const wasStreaming = !!currentThread?.isStreaming;
+    const extensionCommand = !wasStreaming && isExtensionCommandPrompt(trimmed, currentThread?.commands);
     const optimisticTitle = getDisplayThreadTitle(null, trimmed, get().config?.language || "en").trim().slice(0, 80);
     const optimistic: ViewMessage = {
       key: `opt-${uid()}`,
@@ -1749,7 +1765,10 @@ export const useStore = create<PiStore>()((set, get) => ({
             isNewSession: false,
             creatingSession: false,
             messages: [...t.messages, optimistic],
-            isStreaming: true,
+            // An extension command is handled outside Pi's agent loop and may
+            // emit no agent lifecycle events. Do not wait forever for a
+            // matching agent_settled event that Pi will never send.
+            isStreaming: extensionCommand ? false : true,
             error: undefined,
           },
         },
@@ -1771,6 +1790,17 @@ export const useStore = create<PiStore>()((set, get) => ({
     }
     const piImages = (images || []).map((im) => ({ type: "image", data: im.data, mimeType: im.mimeType }));
     try {
+      // A fresh/disk-loaded thread may not have populated its command list
+      // until ensureConnected completed. Re-evaluate before sending so a
+      // successful extension command cannot strand the composer in streaming.
+      const connectedThread = get().threads[tid];
+      const handledOutsideAgentLoop = !wasStreaming && isExtensionCommandPrompt(trimmed, connectedThread?.commands);
+      if (handledOutsideAgentLoop) {
+        set((s) => {
+          const t = s.threads[tid];
+          return t && t.isStreaming ? { threads: { ...s.threads, [tid]: { ...t, isStreaming: false } } } : s;
+        });
+      }
       if (wasStreaming) {
         // mode: "steer" interrupts current work; "followUp" waits until agent finishes
         if (mode === "followUp") {
