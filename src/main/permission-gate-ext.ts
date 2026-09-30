@@ -131,6 +131,7 @@ const READ_ONLY_SEGMENTS: RegExp[] = [
 ];
 
 const SAFE_TOOLS = new Set([
+  "pi_studio_present",
   "read",
   "grep",
   "find",
@@ -691,6 +692,82 @@ function redactInput(value: unknown): string {
 }
 
 export default function permissionGate(pi: any) {
+  // Explicit delivery is separate from filesystem activity. The successful
+  // tool result is persisted by Pi, so reopening/forking uses the same list.
+  pi.registerTool({
+    name: "pi_studio_present",
+    label: "Present final files",
+    description: "Declare existing files as final deliverables for the user in Pi Studio. Call after creating and verifying the final files, immediately before your final reply. Do not include intermediate scripts, scratch data, logs, or QA screenshots unless the user requested them. The latest successful call in this reply replaces the previous delivery list. This tool does not copy or publish files.",
+    promptSnippet: "Declare the final files delivered to the user.",
+    promptGuidelines: ["When a task produces files for the user, call pi_studio_present with only the final deliverables before your final reply. Keep intermediate files out of the delivery list. Prefer an ordinary reply when no separate file is needed."],
+    parameters: {
+      type: "object", required: ["files"], additionalProperties: false,
+      properties: { files: {
+        type: "array", minItems: 1, maxItems: 20,
+        description: "The final files only; relative paths resolve against the session working directory.",
+        items: { type: "object", required: ["path"], additionalProperties: false, properties: {
+          path: { type: "string", minLength: 1 },
+          description: { type: "string", maxLength: 500 },
+        } },
+      } },
+    },
+    async execute(_id: string, args: any, signal: AbortSignal | undefined, _update: any, ctx: any) {
+      if (!Array.isArray(args?.files) || args.files.length < 1 || args.files.length > 20) {
+        throw new Error("Present requires 1 to 20 final files.");
+      }
+      const files: { path: string; description?: string }[] = [];
+      const seen = new Set<string>();
+      for (const file of args.files) {
+        signal?.throwIfAborted();
+        if (typeof file?.path !== "string" || !file.path.trim()) throw new Error("A file path is required.");
+        const target = resolve(ctx.cwd, file.path.trim());
+        let info;
+        try { info = statSync(target); } catch { throw new Error(`Cannot present ${file.path}: file not found. Create or correct it and retry.`); }
+        if (!info.isFile()) throw new Error(`Cannot present ${file.path}: not a regular file.`);
+        const key = process.platform === "win32" ? target.toLowerCase() : target;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        files.push({ path: target, ...(typeof file.description === "string" && file.description.trim() ? { description: file.description.trim().slice(0, 500) } : {}) });
+      }
+      signal?.throwIfAborted();
+      const delivery = { kind: "pi-studio-deliverables", version: 1, files };
+      return { content: [{ type: "text", text: JSON.stringify(delivery) }], details: delivery };
+    },
+  });
+  let replyStartedAt: number | undefined;
+  let replyStartLeaf: string | null = null;
+  pi.on("agent_start", (_event: any, ctx: any) => {
+    // Retries may start another low-level loop before the reply settles.
+    if (replyStartedAt !== undefined) return;
+    replyStartedAt = Date.now();
+    replyStartLeaf = ctx.sessionManager.getLeafId();
+  });
+  pi.on("agent_settled", (_event: any, ctx: any) => {
+    if (replyStartedAt === undefined) return;
+    const branch = ctx.sessionManager.getBranch();
+    const start = replyStartLeaf ? branch.findIndex((entry: any) => entry.id === replyStartLeaf) + 1 : 0;
+    const entryIds = branch.slice(start).filter((entry: any) => entry.type === "message" && entry.message?.role === "assistant").map((entry: any) => entry.id);
+    if (entryIds.length) pi.appendEntry("pi-studio-reply-timing", { startedAt: replyStartedAt, endedAt: Date.now(), entryIds });
+    replyStartedAt = undefined;
+    replyStartLeaf = null;
+  });
+  // Studio treats max as a baseline effort. Add the default on the live
+  // registry objects so both RPC capability checks and provider clamping see
+  // it; keep explicit provider mappings (including disabled levels) intact.
+  const defaultMax = (model: any) => {
+    if (model?.reasoning && model.thinkingLevelMap?.max === undefined) {
+      model.thinkingLevelMap = { ...model.thinkingLevelMap, max: "max" };
+    }
+  };
+  const defaultRegistryMax = (ctx: any) => {
+    for (const model of ctx.modelRegistry.getAll()) defaultMax(model);
+    defaultMax(ctx.model);
+  };
+  pi.on("session_start", (_event: any, ctx: any) => defaultRegistryMax(ctx));
+  pi.on("model_select", (event: any, ctx: any) => {
+    defaultRegistryMax(ctx);
+    defaultMax(event.model);
+  });
   const modeFile = process.env.PI_STUDIO_GATE_MODE_FILE || "";
   const approvedExact = new Set<string>();
   const approvedPrefixes = new Set<string>();
@@ -786,7 +863,7 @@ export default function permissionGate(pi: any) {
   pi.on("tool_call", async (event: any, ctx: any) => {
     if (gatingDisabled()) return undefined;
 
-    if (event.toolName === "bash") {
+    if (event.toolName === "bash" || event.toolName === "powershell") {
       const command = String(event.input?.command || "");
       const decision = classifyShellCommand(command, String(ctx.cwd || process.cwd()));
       if (decision.risk === "allow" || (decision.risk === "approval" && hasShellApproval(decision))) return undefined;
@@ -837,6 +914,9 @@ export default function permissionGate(pi: any) {
     }
 
     const toolName = String(event.toolName || "");
+    // The orchestration sandbox calls ctx.executeTool(), so each nested call
+    // passes through this handler and receives its own permission decision.
+    if (toolName === "codemode" || toolName === "tool_search" || toolName === "list_mcp_resources" || toolName === "list_mcp_resource_templates" || toolName === "read_mcp_resource") return undefined;
     if (SAFE_TOOLS.has(toolName)) return undefined;
     if (SUBAGENT_TOOLS.has(toolName)) {
       return requestApproval(
@@ -880,6 +960,7 @@ export default function permissionGate(pi: any) {
     description: "Internal Pi Studio model registry refresh",
     handler: async (_args: string, ctx: any) => {
       await ctx.modelRegistry.refresh();
+      defaultRegistryMax(ctx);
     },
   });
 }

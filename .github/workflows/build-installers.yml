@@ -33,7 +33,7 @@ jobs:
     # These are unsigned CI artifacts. Configure signing secrets and remove
     # this setting for production distribution builds.
     env:
-      PI_RUNTIME_VERSION: 0.84.1
+      PI_RUNTIME_VERSION: 0.99.1
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
     steps:

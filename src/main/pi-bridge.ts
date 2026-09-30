@@ -2,7 +2,10 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { app } from "electron";
 import { ensureRuntimePackage, getActiveRuntimeRoot, getRuntimePackageManifest, runtimePathsForRoot } from "./runtime-package";
+import { getAgentDir } from "./session-store";
+import { visibleConfiguredModels } from "./model-visibility";
 
 /**
  * PiBridge
@@ -45,6 +48,17 @@ let resolvingRuntime: Promise<ResolvedRuntime> | null = null;
  *  2. process.resourcesPath/bundled (Electron packaged app)
  */
 export function getBundledRuntime(): ResolvedRuntime | null {
+  if (!app.isPackaged) {
+    const root = app.getAppPath();
+    const pkg = join(root, ".runtime-source", "node_modules", "@earendil-works", "pi-coding-agent");
+    try {
+      const expected = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).piRuntimeVersion;
+      const actual = JSON.parse(readFileSync(join(pkg, "package.json"), "utf8")).version;
+      const node = locateNode();
+      const cli = join(pkg, "dist", "cli.js");
+      if (expected === actual && node && existsSync(cli)) return { node, cli };
+    } catch { /* development runtime not installed; use the existing resolution path */ }
+  }
   const candidates: string[] = [];
   if (process.env.PI_BUNDLED_DIR) candidates.push(process.env.PI_BUNDLED_DIR);
   // Electron sets process.resourcesPath in both dev and packaged mode.
@@ -205,7 +219,19 @@ export async function resolvePiRuntime(cliOverride?: string): Promise<ResolvedRu
     }
 
     // 2. App-updated runtime under userData (written by the core updater)
+    // Promote older app-managed installations when the installer ships a newer runtime.
+    if (getRuntimePackageManifest()) await ensureRuntimePackage();
     const userData = locateUserDataRuntime();
+    if (!app.isPackaged) {
+      const development = getBundledRuntime();
+      const version = (rt: ResolvedRuntime | null) => {
+        try { return String(JSON.parse(readFileSync(join(dirname(dirname(rt!.cli)), "package.json"), "utf8")).version).split(".").map(Number); }
+        catch { return [0, 0, 0]; }
+      };
+      const localVersion = version(development), installedVersion = version(userData);
+      const comparison = localVersion[0] - installedVersion[0] || localVersion[1] - installedVersion[1] || localVersion[2] - installedVersion[2];
+      if (development && (!userData || comparison >= 0)) { resolvedRuntime = development; resolvedKind = "bundled"; return resolvedRuntime; }
+    }
     if (userData) {
       resolvedRuntime = userData;
       resolvedKind = "userData";
@@ -349,6 +375,7 @@ export class PiBridge {
     for (const skill of this.opts.skills || []) args.push("--skill", skill);
 
     const env: NodeJS.ProcessEnv = { ...process.env };
+    if (!env.PI_CODING_AGENT_DIR && env.PI_AGENT_DIR) env.PI_CODING_AGENT_DIR = env.PI_AGENT_DIR;
     if (this.opts.gateModeFile) env.PI_STUDIO_GATE_MODE_FILE = this.opts.gateModeFile;
 
     this.proc = spawn(rt.node, [rt.cli, ...args], {
@@ -492,8 +519,10 @@ export class PiBridge {
   setModel(provider: string, modelId: string): Promise<unknown> {
     return this.send("set_model", { provider, modelId });
   }
-  getAvailableModels(): Promise<unknown> {
-    return this.send("get_available_models");
+  async getAvailableModels(): Promise<unknown> {
+    const response = await this.send("get_available_models") as { models?: { provider: string; id: string }[] };
+    if (!Array.isArray(response?.models)) return response;
+    return { ...response, models: visibleConfiguredModels(response.models, join(getAgentDir(), "models.json")) };
   }
   async refreshModels(): Promise<unknown> {
     await this.prompt("/pi-studio-refresh-models");

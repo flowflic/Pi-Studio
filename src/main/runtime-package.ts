@@ -316,8 +316,15 @@ export async function installRuntimePackage(manifest: RuntimeManifest, onProgres
 /** Ensure the runtime embedded in the installer is present on first launch. */
 export function ensureRuntimePackage(onProgress?: ProgressFn): Promise<string | null> {
   const active = getActiveRuntimePaths();
-  if (active) return Promise.resolve(getActiveRuntimeRoot());
   const manifest = getRuntimePackageManifest();
+  if (active) {
+    let installedVersion = "0.0.0";
+    try { installedVersion = JSON.parse(readFileSync(join(dirname(dirname(active.cli)), "package.json"), "utf8")).version; } catch { /* legacy or corrupt runtime: use embedded version */ }
+    const parts = (version: string) => version.split(".").map(part => parseInt(part, 10) || 0);
+    const current = parts(installedVersion), embedded = parts(manifest?.runtimeVersion || "0.0.0");
+    const comparison = current[0] - embedded[0] || current[1] - embedded[1] || current[2] - embedded[2];
+    if (!manifest || comparison >= 0) return Promise.resolve(getActiveRuntimeRoot());
+  }
   if (!manifest) return Promise.resolve(null);
   if (!installPromise) {
     installPromise = installRuntimePackage(manifest, onProgress).catch((error) => {

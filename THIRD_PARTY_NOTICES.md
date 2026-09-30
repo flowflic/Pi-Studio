@@ -1,5 +1,7 @@
 # Third-party notices
 
+Pi Studio includes pricing catalogs, billing math and quota response parsers adapted from [dsh-cost-meter](https://github.com/Han-1413141/dsh-cost-meter), commit `c9885ddf2f1b09260a1166bac943d30e1121cbae` (2026-09-30 snapshot), under the MIT License. Copyright (c) 2026 dsh-cost-meter contributors. The full license is retained in `src/main/vendor/dsh-cost-meter-LICENSE` and distributed under `resources/licenses/`. Adaptation details are in `src/main/vendor/README.md`.
+
 Pi Studio is distributed under the MIT License for the Pi Studio code only. This file records the major components used by the source tree and the packaged application. Third-party software remains under its own license.
 
 When redistributing a built application, keep this notice together with the application and retain the license and copyright files shipped with the bundled dependencies.
@@ -9,7 +11,7 @@ When redistributing a built application, keep this notice together with the appl
 ### Pi coding agent
 
 - Package: `@earendil-works/pi-coding-agent`
-- Version in the current embedded runtime: `0.84.1`
+- Version in the current embedded runtime: `0.99.1`
 - License: MIT
 - Copyright: Mario Zechner
 - Source: <https://github.com/earendil-works/pi/tree/main/packages/coding-agent>
@@ -34,7 +36,8 @@ The following versions are the resolved package versions used when this notice w
 | `clsx` | 2.1.1 | MIT |
 | `highlight.js` | 11.11.1 | BSD-3-Clause |
 | `jszip` | 3.10.1 | MIT or GPL-3.0-or-later |
-| `mammoth` | 1.12.0 | BSD-2-Clause |
+| `docx-preview` | 0.3.7 | Apache-2.0 |
+| `@univerjs/presets`, `@univerjs/preset-sheets-core` and Univer modules | 1.0.3 | Apache-2.0 |
 | `react` | 18.3.1 | MIT |
 | `react-dom` | 18.3.1 | MIT |
 | `react-markdown` | 9.1.0 | MIT |

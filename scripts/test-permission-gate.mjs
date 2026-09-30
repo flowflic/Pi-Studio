@@ -87,10 +87,41 @@ assert.equal(classifyShellCommand(multiline).risk, "approval", "multiline comman
 assert.equal(isOutsideProject("src/main/index.ts", process.cwd()), false);
 assert.equal(isOutsideProject("../outside.txt", process.cwd()), true);
 
+// The bundled Studio extension supplies max to live registry models, including
+// after model switches and a registry reload, without overwriting overrides.
+const capabilityHandlers = new Map();
+const capabilityCommands = new Map();
+installGate({
+  registerTool() {},
+  on: (name, callback) => capabilityHandlers.set(name, callback),
+  registerCommand: (name, command) => capabilityCommands.set(name, command),
+});
+let capabilityModels = [
+  { reasoning: true },
+  { reasoning: true, thinkingLevelMap: { max: "high", low: null } },
+  { reasoning: true, thinkingLevelMap: { max: null } },
+  { reasoning: false },
+];
+const capabilityCtx = { model: capabilityModels[0], modelRegistry: {
+  getAll: () => capabilityModels,
+  refresh: async () => { capabilityModels = [{ reasoning: true }]; },
+} };
+capabilityHandlers.get("session_start")({}, capabilityCtx);
+assert.equal(capabilityModels[0].thinkingLevelMap.max, "max");
+assert.deepEqual(capabilityModels[1].thinkingLevelMap, { max: "high", low: null });
+assert.equal(capabilityModels[2].thinkingLevelMap.max, null);
+assert.equal(capabilityModels[3].thinkingLevelMap, undefined);
+const switchedModel = { reasoning: true };
+capabilityHandlers.get("model_select")({ model: switchedModel }, capabilityCtx);
+assert.equal(switchedModel.thinkingLevelMap.max, "max");
+await capabilityCommands.get("pi-studio-refresh-models").handler("", capabilityCtx);
+assert.equal(capabilityModels[0].thinkingLevelMap.max, "max");
+
 function makeHarness(selectChoice) {
   let handler;
   let selectCalls = 0;
   const pi = {
+    registerTool() {},
     on(name, callback) {
       if (name === "tool_call") handler = callback;
     },
@@ -112,6 +143,10 @@ function makeHarness(selectChoice) {
     calls: () => selectCalls,
   };
 }
+
+const deliveryGate = makeHarness(() => { throw new Error("Delivery metadata must not request permission"); });
+assert.equal(await deliveryGate.call("pi_studio_present", { files: [{ path: "report.xlsx" }] }), undefined);
+assert.equal(deliveryGate.calls(), 0, "declaring existing files is read-only metadata");
 
 const exact = makeHarness((_title, options) => options.find((option) => option.startsWith("Allow this exact")));
 await exact.call("bash", { command: "npm install" });
@@ -150,3 +185,12 @@ await subagent.call("convene_council", { task: "review" });
 assert.equal(subagent.calls(), 3, "subagent full-permission escalation must never be cached");
 
 console.log("permission gate tests passed");
+
+const nativeTools = makeHarness((_title, options) => options[0]);
+await nativeTools.call("codemode", { code: "await tools.read({path:'README.md'})" });
+await nativeTools.call("tool_search", { query: "test" });
+await nativeTools.call("powershell", { command: "Get-ChildItem" });
+assert.equal(nativeTools.calls(), 0, "orchestration and read-only PowerShell should run without redundant approvals");
+await nativeTools.call("powershell", { command: "Remove-Item -Recurse data" });
+await nativeTools.call("mcp__test__delete_record", { id: "record" });
+assert.equal(nativeTools.calls(), 2, "PowerShell and nested MCP mutations must remain gated");

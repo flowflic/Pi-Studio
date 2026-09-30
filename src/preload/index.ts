@@ -120,6 +120,13 @@ const api = {
     setPermission: (args: { threadId: string; permission: "sandbox" | "full" }) => ipcRenderer.invoke("thread:setPermission", args),
   },
   settings: {
+    getUsagePricing: () => ipcRenderer.invoke("settings:getUsagePricing") as Promise<{ config: import("../main/usage-pricing").PricingConfig; catalog: ReturnType<typeof import("../main/usage-pricing").pricingCatalog>; snapshot: string }>,
+    saveUsagePricing: (config: unknown) => ipcRenderer.invoke("settings:saveUsagePricing", config) as Promise<import("../main/usage-pricing").PricingConfig>,
+    getPlanQuotas: (force = false) => ipcRenderer.invoke("settings:getPlanQuotas", force) as Promise<import("../main/plan-quotas").PlanQuota[]>,
+    getUsage: (range: { from: number; to: number }) => ipcRenderer.invoke("settings:getUsage", range) as Promise<import("../main/usage-service").UsageReport>,
+    getMcp: () => ipcRenderer.invoke("settings:getMcp") as Promise<{ path: string; config: import("../main/mcp-service").McpConfig }>,
+    saveMcp: (config: unknown) => ipcRenderer.invoke("settings:saveMcp", config),
+    mcpAction: (action: "list" | "login" | "logout", name?: string) => ipcRenderer.invoke("settings:mcpAction", { action, name }) as Promise<{ code: number | null; stdout: string; stderr: string }>,
     getModels: () => ipcRenderer.invoke("settings:getModels"),
     discoverModels: (provider: Record<string, unknown>) => ipcRenderer.invoke("settings:discoverModels", provider),
     testModel: (args: { providerId: string; provider: Record<string, unknown>; modelId: string }) =>

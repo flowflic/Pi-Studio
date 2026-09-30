@@ -6,6 +6,8 @@ import { reasoningLevelLabel } from "../lib/reasoning";
 import { translateUiText } from "../lib/i18n";
 import { Archive, Check, Close, Edit, Plus, Refresh, Folder } from "./icons";
 import appIconUrl from "../../../../resources/icon.png";
+import { UsageSettings } from "./UsageSettings";
+import { McpSettings } from "./McpSettings";
 
 /* ------------------------------------------------------------------ *
  * Constants
@@ -85,10 +87,8 @@ function TokenLimitInput({
 }
 
 function supportedThinkingLevels(model?: ModelDef): readonly string[] {
-  // This is a desired global default, not the live model capability list.
-  // Keep unmapped levels visible so models without an explicit map can still
-  // choose max here; the live composer still narrows levels using Pi's
-  // model-specific capability response.
+  // Studio supplies a default max mapping to reasoning models in the live
+  // registry as well. Explicitly disabled levels still take precedence.
   if (!model) return THINK_LEVELS;
   if (!model.reasoning) return ["off"];
   return THINK_LEVELS.filter((level) => model.thinkingLevelMap?.[level] !== null);
@@ -678,7 +678,7 @@ function ProviderCard({
  * Main panel
  * ------------------------------------------------------------------ */
 
-type Tab = "models" | "thinking" | "archive" | "diag" | "update" | "about";
+type Tab = "models" | "thinking" | "archive" | "diag" | "update" | "about" | "usage" | "mcp";
 
 interface NewProviderDraft {
   id: string;
@@ -1215,6 +1215,8 @@ export function Settings() {
             {([
               ["models", "模型与提供商"],
               ["thinking", "思考默认值"],
+              ["usage", language === "zh" ? "Token 用量" : "Token usage"],
+              ["mcp", "MCP"],
               ["archive", "已归档项目"],
               ["diag", "诊断与配置"],
               ["update", language === "zh" ? "应用更新" : "App updates"],
@@ -1251,7 +1253,7 @@ export function Settings() {
         <section className="set-main">
           <header className="set-head">
             <h2>
-              {tab === "models"
+              {tab === "usage" ? (language === "zh" ? "Token 用量" : "Token usage") : tab === "mcp" ? "MCP" : tab === "models"
                 ? "模型与提供商"
                 : tab === "thinking"
                   ? "思考默认值"
@@ -1292,6 +1294,8 @@ export function Settings() {
           </header>
 
           <div className="set-body">
+            {tab === "usage" && <UsageSettings language={language} />}
+            {tab === "mcp" && <McpSettings language={language} />}
             {tab === "models" && (
               <>
                 <div className="set-prov-toolbar">

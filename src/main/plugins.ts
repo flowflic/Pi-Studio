@@ -119,7 +119,7 @@ export function removePackageEntry(source: string): void {
 }
 
 /** Run a pi CLI command (install/remove/update/list) and capture its output. */
-export function runPiCli(args: string[], onLine?: (line: string) => void): Promise<{ code: number | null; stdout: string; stderr: string }> {
+export function runPiCli(args: string[], onLine?: (line: string) => void, timeoutMs = 0): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise(async (resolve, reject) => {
     let rt: { node: string; cli: string };
     try {
@@ -128,9 +128,10 @@ export function runPiCli(args: string[], onLine?: (line: string) => void): Promi
       reject(e);
       return;
     }
-    const proc = spawn(rt.node, [rt.cli, ...args], { cwd: getAgentDir(), env: { ...process.env }, windowsHide: true });
+    const proc = spawn(rt.node, [rt.cli, ...args], { cwd: getAgentDir(), env: { ...process.env, PI_CODING_AGENT_DIR: getAgentDir() }, windowsHide: true });
     let stdout = "";
     let stderr = "";
+    const timer = timeoutMs ? setTimeout(() => { stderr += "\nCommand timed out."; proc.kill(); }, timeoutMs) : undefined;
     proc.stdout.on("data", (d: Buffer) => {
       const s = d.toString("utf8");
       stdout += s;
@@ -141,8 +142,8 @@ export function runPiCli(args: string[], onLine?: (line: string) => void): Promi
       stderr += s;
       s.split(/\r?\n/).forEach((l) => l.trim() && onLine?.(l));
     });
-    proc.on("error", reject);
-    proc.on("exit", (code) => resolve({ code, stdout, stderr }));
+    proc.on("error", error => { clearTimeout(timer); reject(error); });
+    proc.on("exit", (code) => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
   });
 }
 

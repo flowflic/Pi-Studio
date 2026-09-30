@@ -2,12 +2,13 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type React
 import { getDisplayThreadTitle, normalizeThreadFile, parseSkillBlock, useStore } from "../store";
 import { Markdown } from "../lib/markdown";
 import { formatClock, formatTokens } from "../lib/format";
-import { collectFileArtifacts } from "../lib/artifacts";
+import { selectFinalArtifacts } from "../lib/artifacts";
 import { parseHtmlReferenceText } from "../lib/html-reference";
 import { attachChatScroll } from "../lib/chat-scroll";
 import { useOutsideClose } from "../lib/useOutsideClose";
 import type { ContentBlock, HtmlElementReference, ToolRun, ViewMessage } from "../lib/types";
 import { Composer } from "./Composer";
+import { ReplyDuration } from "./ReplyDuration";
 import { ExtUiPromptCard } from "./ExtUiPromptCard";
 import { Sidebar, PanelRight, Copy, ThumbUp, ThumbDown, Refresh, Edit, Folder, Files, Gauge, Branch, ChevronRight } from "./icons";
 import appIconUrl from "../../../../resources/icon.png";
@@ -112,7 +113,8 @@ export function Chat() {
   // a message finalizes.
   const groups = useMemo(() => groupMessages(thread.messages), [thread.messages]);
   const lastGroup = groups[groups.length - 1];
-  const streamingExtends = !!streaming && !!lastGroup && lastGroup.role === "assistant";
+  const streamingExtends = !!streaming && !!lastGroup && lastGroup.role === "assistant" &&
+    streaming.replyStartedAt === lastGroup.items[0].replyStartedAt;
   const headGroups = streamingExtends ? groups.slice(0, -1) : groups;
   const userGroups = useMemo(
     () => groups.filter((group) => group.items[0]?.role === "user"),
@@ -297,7 +299,8 @@ export function Chat() {
         <div className="chat-scroll" ref={scrollRef}>
           <div className="messages">
             {headGroups.map((g) => (
-              <MessageGroup key={g.key} threadId={activeThreadId} group={g} toolRuns={thread.toolRuns} locked={thread.isStreaming} onPreviewImage={setPreviewImage} />
+              <MessageGroup key={g.key} threadId={activeThreadId} group={g} toolRuns={thread.toolRuns} locked={thread.isStreaming}
+                streaming={thread.isStreaming && g.role === "assistant" && g.items.some(m => m.replyStartedAt !== undefined && m.replyStartedAt === thread.replyStartedAt)} onPreviewImage={setPreviewImage} />
             ))}
             {streaming && streamingExtends && lastGroup && (
               <MessageGroup
@@ -336,7 +339,10 @@ export function Chat() {
       <div className="composer-confirmation-region" aria-live="assertive">
         <ExtUiPromptCard threadId={activeThreadId} />
       </div>
+      {Object.entries(thread.extensionWidgets || {}).filter(([, widget]) => widget.placement === "aboveEditor").map(([key, widget]) => <pre key={key} className="extension-widget">{widget.lines.join("\n")}</pre>)}
       <Composer threadId={activeThreadId} />
+      {Object.entries(thread.extensionWidgets || {}).filter(([, widget]) => widget.placement === "belowEditor").map(([key, widget]) => <pre key={key} className="extension-widget">{widget.lines.join("\n")}</pre>)}
+      {Object.keys(thread.extensionStatuses || {}).length > 0 && <div className="extension-statuses" role="status">{Object.entries(thread.extensionStatuses || {}).map(([key, text]) => <span key={key}>{text}</span>)}</div>}
       {previewImage && (
         <div className="image-lightbox" role="dialog" aria-modal="true" aria-label="图片预览" onMouseDown={() => setPreviewImage(null)}>
           <button className="image-lightbox-close" title="关闭" onClick={() => setPreviewImage(null)}>×</button>
@@ -367,7 +373,8 @@ function groupMessages(messages: ViewMessage[]): MsgGroup[] {
   const groups: MsgGroup[] = [];
   for (const m of messages) {
     const last = groups[groups.length - 1];
-    if (m.role === "assistant" && last && last.role === "assistant") {
+    if (m.role === "assistant" && last && last.role === "assistant" &&
+      m.replyStartedAt === last.items[0].replyStartedAt) {
       last.items.push(m);
     } else {
       groups.push({ key: m.key, role: m.role === "assistant" ? "assistant" : "user", items: [m] });
@@ -486,8 +493,8 @@ function MessageGroupInner({
   const language = useStore((s) => s.config?.language || "en");
   const [branching, setBranching] = useState<"fork" | "clone" | null>(null);
   const artifacts = useMemo(
-    () => (group.role === "assistant" ? collectFileArtifacts(group.items, toolRuns, cwd) : []),
-    [cwd, group.items, group.role, toolRuns],
+    () => (group.role === "assistant" && !streaming ? selectFinalArtifacts(group.items, toolRuns, cwd) : []),
+    [cwd, group.items, group.role, toolRuns, streaming],
   );
   const artifactCheckKey = useMemo(() => {
     const paths = artifacts.map((artifact) => artifact.path.toLowerCase()).join("|");
@@ -662,11 +669,11 @@ function MessageGroupInner({
         {streaming && !hasBlocks && <span className="muted">思考中</span>}
         {streaming && <span className="streaming-dot" />}
         {last.errorMessage && <div style={{ color: "#c0392b", marginTop: 6 }}>{last.errorMessage}</div>}
-        {visibleArtifacts.length > 0 && (
-          <section className="msg-artifacts" aria-label={language === "zh" ? "文件产物" : "File outputs"}>
+        {!streaming && !last.errorMessage && last.stopReason !== "aborted" && last.stopReason !== "error" && last.stopReason !== "toolUse" && visibleArtifacts.length > 0 && (
+          <section className="msg-artifacts" aria-label={language === "zh" ? "最终产物" : "Final deliverables"}>
             <div className="msg-artifacts-head">
               <Files size={13} />
-              <span>{language === "zh" ? "文件产物" : "File outputs"}</span>
+              <span>{language === "zh" ? "最终产物" : "Final deliverables"}</span>
               <span className="msg-artifacts-count">{visibleArtifacts.length}</span>
             </div>
             <div className="msg-artifacts-list">
@@ -688,13 +695,14 @@ function MessageGroupInner({
                   <span className="msg-artifact-copy">
                     <span className="msg-artifact-name">{artifact.name}</span>
                     <span className="msg-artifact-path">{artifact.displayPath}</span>
+                    {artifact.description && <span className="msg-artifact-path">{artifact.description}</span>}
                   </span>
                   <span className={`msg-artifact-action ${artifact.action}`}>
                     {language === "zh"
-                      ? artifact.action === "created"
+                      ? artifact.action === "presented" ? "已交付" : artifact.action === "created"
                         ? "已生成"
                         : "已更新"
-                      : artifact.action === "created"
+                      : artifact.action === "presented" ? "Delivered" : artifact.action === "created"
                         ? "Created"
                         : "Updated"}
                   </span>
@@ -703,6 +711,10 @@ function MessageGroupInner({
               ))}
             </div>
           </section>
+        )}
+        {group.items[0].replyStartedAt !== undefined && (
+          <div className="msg-footer"><ReplyDuration startedAt={group.items[0].replyStartedAt}
+            endedAt={last.replyEndedAt} running={!!streaming} language={language} /></div>
         )}
         {!streaming && (
           <div className="msg-footer">
@@ -959,6 +971,11 @@ const ToolCard = memo(function ToolCard({ id, name, blockArgs, run, language }: 
               <div className="tool-empty compact">{emptyMessage}</div>
             )}
           </section>
+          {!!run?.nestedCalls?.calls.length && <section className="tool-section">
+            <div className="tool-section-label">{language === "zh" ? "嵌套工具调用" : "Nested tool calls"}</div>
+            {run.nestedCalls.calls.map(call => <details key={call.id} className="nested-tool-call"><summary>{call.name} · {call.status === "unfinished" ? (language === "zh" ? "运行中" : "Running") : call.status === "error" ? (language === "zh" ? "出错" : "Error") : (language === "zh" ? "已完成" : "Done")}{call.durationMs !== undefined ? ` · ${(call.durationMs / 1000).toFixed(1)}s` : ""}</summary>{call.arguments !== undefined && <ToolCode text={JSON.stringify(call.arguments, null, 2)} language="json" />}{call.error && <pre>{call.error}</pre>}</details>)}
+            {!run.nestedCalls.complete && <div className="set-hint">{language === "zh" ? "调用记录可能省略了部分参数或尚未完成。" : "Some arguments may be omitted or calls may be unfinished."}</div>}
+          </section>}
         </div>
       )}
     </div>
@@ -1067,6 +1084,7 @@ function languageForPath(path: string): string | undefined {
 }
 
 function languageForTool(name: string): string | undefined {
+  if (matchesTool(name, ["codemode"])) return "javascript";
   if (matchesTool(name, ["python"])) return "python";
   if (matchesTool(name, ["powershell", "pwsh"])) return "powershell";
   if (matchesTool(name, ["bash", "shell", "sh", "zsh"])) return "bash";
@@ -1094,8 +1112,8 @@ function ToolCode({ text, language }: { text: string; language?: string }) {
 
 function renderToolArgs(name: string, run: ToolRun | undefined, fallbackArgs: unknown, language: "en" | "zh"): ReactNode {
   const args = parseToolArgs(run, fallbackArgs);
-  const command = toolArg(args, ["command", "cmd", "script"]);
-  if (matchesTool(name, ["bash", "shell", "sh", "zsh", "exec", "execute", "command", "run", "python"])) {
+  const command = toolArg(args, ["command", "cmd", "script", "code"]);
+  if (matchesTool(name, ["bash", "powershell", "pwsh", "codemode", "shell", "sh", "zsh", "exec", "execute", "command", "run", "python"])) {
     const text = typeof command === "string" ? normalizeTranscriptText(command) : typeof run?.argsStr === "string" ? normalizeTranscriptText(run.argsStr) : "";
     return text ? <ToolCode text={text} language={languageForTool(name)} /> : null;
   }

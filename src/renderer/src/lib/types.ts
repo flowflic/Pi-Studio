@@ -155,6 +155,9 @@ export interface ViewMessage {
   model?: string;
   stopReason?: string;
   errorMessage?: string;
+  /** Whole Agent reply, including thinking, tools and retries. */
+  replyStartedAt?: number;
+  replyEndedAt?: number;
 }
 
 export interface ToolRun {
@@ -172,6 +175,7 @@ export interface ToolRun {
   argsStr?: string;
   startedAt?: number;
   endedAt?: number;
+  nestedCalls?: { calls: { id: string; name: string; arguments?: unknown; status: "ok" | "error" | "unfinished"; durationMs?: number; error?: string }[]; complete: boolean };
 }
 
 /** A follow-up the user queued (Enter) while the agent is streaming. Held in
@@ -202,6 +206,7 @@ export interface ThreadState {
    *  transcript (read from disk) while still disconnected; interaction connects. */
   connected?: boolean;
   isStreaming: boolean;
+  replyStartedAt?: number;
   messages: ViewMessage[];
   streaming: ViewMessage | null;
   toolRuns: Record<string, ToolRun>;
@@ -210,6 +215,8 @@ export interface ThreadState {
   permission: PermissionLevel;
   /** text injected by an extension via set_editor_text */
   pendingEditorText?: string;
+  extensionStatuses?: Record<string, string>;
+  extensionWidgets?: Record<string, { lines: string[]; placement: "aboveEditor" | "belowEditor" }>;
   /** Follow-up queued via Enter while streaming; delivered when the agent settles. */
   pendingFollowUp?: PendingFollowUp | null;
 }

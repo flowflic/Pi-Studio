@@ -16,7 +16,8 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const APP_PACKAGE = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
-const EXPECTED_PI_VERSION = process.env.PI_RUNTIME_VERSION || APP_PACKAGE.piRuntimeVersion || "0.84.1";
+const EXPECTED_PI_VERSION = process.env.PI_RUNTIME_VERSION || APP_PACKAGE.piRuntimeVersion;
+if (!EXPECTED_PI_VERSION) throw new Error("package.json must specify piRuntimeVersion");
 const STAGE = join(ROOT, ".runtime-stage");
 const RUNTIME_OUT = join(ROOT, "runtime-release");
 const MANIFEST_OUT = join(ROOT, "resources", "runtime-manifest.json");
@@ -140,6 +141,9 @@ function locatePiPackage() {
     const actualVersion = readPiVersion(explicit) || "unknown";
     throw new Error(`PI_PACKAGE_DIR must contain Pi v${EXPECTED_PI_VERSION}; found v${actualVersion}: ${explicit}`);
   }
+
+  const localPackage = join(ROOT, ".runtime-source", "node_modules", "@earendil-works", "pi-coding-agent");
+  if (isExpectedPiPackage(localPackage)) return localPackage;
 
   try {
     const globalRoot = execFileSync(npmBinary(), ["root", "-g"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();

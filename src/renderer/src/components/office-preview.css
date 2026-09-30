@@ -1,0 +1,12 @@
+.office-preview { display:flex; flex-direction:column; height:100%; min-height:0; min-width:0; background:var(--preview-bg); color:var(--text); }
+.office-preview-toolbar { display:flex; flex:none; align-items:center; justify-content:space-between; gap:12px; padding:8px 12px; border-bottom:1px solid var(--border); font-size:12px; background:var(--surface); }
+.office-preview-readonly { color:var(--text-dim); white-space:nowrap; }
+.office-preview-toolbar label { display:flex; align-items:center; gap:6px; color:var(--text-dim); }
+.office-preview-toolbar select { border:1px solid var(--border); border-radius:6px; padding:3px 6px; color:var(--text); background:var(--control-bg,var(--surface)); font:inherit; }
+.office-preview-notice { padding:7px 12px; font-size:11px; line-height:1.5; color:var(--text-dim); background:var(--accent-soft); border-bottom:1px solid var(--border); }
+.office-sheet-stage { position:relative; flex:1; min-height:0; overflow:hidden; }
+.office-univer-container, .office-univer-host { width:100%; height:100%; overflow:hidden; }
+.office-preview-overlay { position:absolute; inset:0; z-index:3; display:flex; justify-content:center; align-items:center; background:var(--preview-bg); }
+.office-preview-error { padding:24px; text-align:center; overflow:auto; color:var(--text-dim); }
+.office-document-stage { position:relative; flex:1; min-height:0; overflow:auto; background:var(--preview-surface-muted); }
+.office-doc-pages { zoom:var(--office-doc-scale,1); min-width:max-content; }

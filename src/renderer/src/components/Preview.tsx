@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import hljs from "highlight.js/lib/core";
 import { useStore } from "../store";
@@ -7,6 +7,9 @@ import { CODE_LANGUAGE_ALIASES, CODE_LANGUAGES } from "../lib/code-languages";
 import { formatBytes } from "../lib/format";
 import { translateUiText } from "../lib/i18n";
 import { Close, Contract, Copy, Edit, Expand, Minus, Plus, Refresh, SelectArrow } from "./icons";
+
+const SpreadsheetPreview = lazy(() => import("./SpreadsheetPreview"));
+const DocumentPreview = lazy(() => import("./DocumentPreview"));
 
 Object.entries(CODE_LANGUAGES).forEach(([name, grammar]) => hljs.registerLanguage(name, grammar as any));
 Object.entries(CODE_LANGUAGE_ALIASES).forEach(([name, aliases]) => {
@@ -306,7 +309,7 @@ export function Preview() {
           <Close size={15} />
         </button>
       </div>
-      <div className={`preview-body ${payload?.kind === "html" ? "html-preview-active" : ""}`}>
+      <div className={`preview-body ${payload?.kind === "html" ? "html-preview-active" : ""} ${payload?.kind === "xlsx" || payload?.kind === "docx" ? "office-preview-active" : ""}`}>
         {loading ? <div className="pv-loading"><span className="spinner" /></div> : (
           <PreviewBody
             payload={payload}
@@ -391,9 +394,9 @@ function PreviewBody({
     case "image":
       return <div className="pv-img"><img src={`data:${payload.mime};base64,${payload.base64}`} alt={payload.name} /></div>;
     case "docx":
-      return <DocxPreview base64={payload.base64} />;
+      return <Suspense fallback={<div className="pv-loading"><span className="spinner" /></div>}><DocumentPreview base64={payload.base64} language={language} /></Suspense>;
     case "xlsx":
-      return <XlsxPreview base64={payload.base64} text={payload.text} />;
+      return <Suspense fallback={<div className="pv-loading"><span className="spinner" /></div>}><SpreadsheetPreview base64={payload.base64} text={payload.text} name={payload.name} language={language} /></Suspense>;
     case "pptx":
       return <PptxPreview base64={payload.base64} language={language} />;
     case "toobig":
@@ -679,67 +682,6 @@ function HtmlPreview({
         }}
         onLoad={syncAnnotationMode}
       />
-    </div>
-  );
-}
-
-function DocxPreview({ base64 }: { base64: string }) {
-  const [html, setHtml] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const mammoth = await import("mammoth");
-        const buf = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
-        const res = await mammoth.default.convertToHtml({ arrayBuffer: buf.buffer as ArrayBuffer });
-        if (!cancelled) setHtml(res.value);
-      } catch (e: any) {
-        if (!cancelled) setErr(e?.message || "docx parse failed");
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [base64]);
-  if (err) return <div className="pv-unsupported">{err}</div>;
-  if (html == null) return <div className="pv-loading"><span className="spinner" /></div>;
-  return <div className="pv-docx" dangerouslySetInnerHTML={{ __html: html }} />;
-}
-
-function XlsxPreview({ base64, text }: { base64?: string; text?: string }) {
-  const [sheets, setSheets] = useState<{ name: string; html: string }[]>([]);
-  const [active, setActive] = useState(0);
-  const [err, setErr] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const XLSX = await import("xlsx");
-        const wb = text
-          ? XLSX.read(text, { type: "string" })
-          : XLSX.read(Uint8Array.from(atob(base64 || ""), (c) => c.charCodeAt(0)), { type: "array" });
-        const out = wb.SheetNames.map((name) => ({
-          name,
-          html: XLSX.utils.sheet_to_html(wb.Sheets[name], { editable: false }),
-        }));
-        if (!cancelled) setSheets(out);
-      } catch (e: any) {
-        if (!cancelled) setErr(e?.message || "xlsx parse failed");
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [base64, text]);
-  if (err) return <div className="pv-unsupported">{err}</div>;
-  if (!sheets.length) return <div className="pv-loading"><span className="spinner" /></div>;
-  return (
-    <div className="pv-xlsx">
-      <div className="sheet-tabs">
-        {sheets.map((sheet, index) => (
-          <button key={sheet.name} className={`sheet-tab ${index === active ? "active" : ""}`} onClick={() => setActive(index)}>
-            {sheet.name}
-          </button>
-        ))}
-      </div>
-      <div className="pv-xlsx-sheet" dangerouslySetInnerHTML={{ __html: sheets[active]?.html || "" }} />
     </div>
   );
 }

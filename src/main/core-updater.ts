@@ -13,7 +13,7 @@ import {
   statSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { getBundledRuntime, resetPiRuntime } from "./pi-bridge";
+import { getBundledRuntime, resetPiRuntime, runtimeKind } from "./pi-bridge";
 import {
   activateRuntimeRoot,
   cleanupRuntimeVersions,
@@ -119,6 +119,13 @@ interface LockEntry {
 
 /** Version of the runtime the app currently uses (userData copy wins over bundled). */
 export function readManagedPiStatus(): { version: string | null; source: "userData" | "bundled" | null } {
+  if (runtimeKind() === "bundled") {
+    const selected = getBundledRuntime();
+    if (selected) {
+      try { return { version: JSON.parse(readFileSync(join(dirname(dirname(selected.cli)), "package.json"), "utf8")).version, source: "bundled" }; }
+      catch { /* fall through to the existing runtime inventory */ }
+    }
+  }
   const activeRoot = getActiveRuntimeRoot();
   const activePkg = activeRoot
     ? existsSync(join(activeRoot, "pi", "package.json"))

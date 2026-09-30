@@ -1,0 +1,10 @@
+export const DEFAULT_PRICE_TABLE: any;
+export const DEFAULT_PROVIDER_PRICE_TABLE: Record<string, { models: Record<string, any> }>;
+export const DEFAULT_PEAK_WINDOWS: { start: number; end: number }[];
+export const DEFAULT_PEAK_EFFECTIVE_AT: string;
+export function providerPriceEntryFor(provider: string, model: string, prices: any, options?: any): { entry: any; priced: boolean; billingMode: string };
+export function normalizePrice(value: any): any;
+export function matchModelId(model: string, candidates: string[]): string | null;
+export function tierFor(entry: any, at: number, peak?: any): any;
+export function costOf(tokens: any, entry: any, at: number, peak?: any): number;
+export function isLocalOriginProviderOrModel(provider: string, model: string): boolean;

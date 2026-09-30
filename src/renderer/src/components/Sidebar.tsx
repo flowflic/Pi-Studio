@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { localizeAutomationThreadTitle, useStore } from "../store";
-import { fileIcon, formatTokens } from "../lib/format";
+import { fileIcon } from "../lib/format";
+import { formatTokens } from "../lib/token-format";
 import { useOutsideClose } from "../lib/useOutsideClose";
 import type { FileNode } from "../lib/types";
 import { Plus, Folder, Archive, Trash, Star, ChevronRight, Edit, Clock, At, Search, Settings, Help, Refresh, Gauge, Smartphone, Sidebar as SidebarIcon } from "./icons";
@@ -41,7 +42,7 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
   );
   const runningSet = useMemo(() => new Set(runningKey ? runningKey.split("\u0000") : []), [runningKey]);
 
-  // total-usage popover (sidebar footer)
+  // Rolling 24-hour usage popover (sidebar footer).
   const [usageOpen, setUsageOpen] = useState(false);
   const [usageData, setUsageData] = useState<any>(null);
   const [usageLoading, setUsageLoading] = useState(false);
@@ -129,7 +130,8 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
   const loadUsage = async () => {
     setUsageLoading(true);
     try {
-      setUsageData(await window.pi.app.getTotalUsage());
+      const to = Date.now();
+      setUsageData(await window.pi.settings.getUsage({ from: to - 24 * 60 * 60 * 1000, to }));
     } catch {
       setUsageData(null);
     }
@@ -138,8 +140,13 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
   const toggleUsage = () => {
     const next = !usageOpen;
     setUsageOpen(next);
-    if (next) loadUsage();
   };
+  useEffect(() => {
+    if (!usageOpen) return;
+    void loadUsage();
+    const timer = window.setInterval(() => { if (!document.hidden) void loadUsage(); }, 60000);
+    return () => window.clearInterval(timer);
+  }, [usageOpen, runningKey]);
 
   const toggleProject = useStore((s) => s.toggleProject);
   const openThread = useStore((s) => s.openThread);
@@ -409,13 +416,13 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
           <Smartphone size={15} />
         </button>
         <div className="usage-wrap" ref={usageRef}>
-          <button className={`iconbtn ${usageOpen ? "on" : ""}`} title={language === "zh" ? "Pi 合计令牌用量" : "Total Pi token usage"} onClick={toggleUsage}>
+          <button className={`iconbtn ${usageOpen ? "on" : ""}`} title={language === "zh" ? "最近 24 小时用量" : "Usage in the last 24 hours"} onClick={toggleUsage}>
             <Gauge size={15} />
           </button>
           {usageOpen && (
             <div className="usage-pop">
               <div className="usage-pop-head">
-                <span>Pi 合计用量</span>
+                <span>{language === "zh" ? "最近 24 小时用量" : "Last 24 hours"}</span>
                 <button className="ctx-refresh" title="刷新" onClick={loadUsage}>
                   <Refresh size={12} />
                 </button>
@@ -428,7 +435,9 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
                 <>
                   <div className="usage-bignum">{formatTokens(usageData.tokens)}</div>
                   <div className="usage-sub">{language === "zh" ? `令牌 · ${usageData.sessions} 个会话` : `Tokens · ${usageData.sessions} ${usageData.sessions === 1 ? "session" : "sessions"}`}</div>
-                  {usageData.cost > 0 && <div className="usage-cost">合计 ${usageData.cost.toFixed(4)}</div>}
+                  <div className="usage-cost">{language === "zh" ? "API 估算费用" : "API estimated cost"} ${usageData.cost.toFixed(4)}</div>
+                  {!!usageData.equivalentCost && <div className="usage-sub">{language === "zh" ? "订阅等值" : "Plan equivalent"}: ${usageData.equivalentCost.toFixed(4)}</div>}
+                  {!!usageData.unpricedRequests && <div className="usage-sub">{usageData.unpricedRequests} {language === "zh" ? "次请求未定价" : "unpriced requests"}</div>}
                 </>
               ) : (
                 <div className="ctx-empty">暂无用量数据</div>

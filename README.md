@@ -1,5 +1,11 @@
 # Pi Studio
 
+Final file delivery uses the Agent's `pi_studio_present` tool, following DeepSeek Harness's explicit presentation approach. The last successful declaration in a reply replaces earlier lists; only validated existing files appear below the completed final response. Scripts, scratch data and QA outputs stay out unless explicitly delivered. Saved sessions retain declarations. Older sessions show only successful outputs referenced by the final response.
+
+**Token usage** settings include per-provider/model cost details, input/output/cache billing, price sources, the bundled dsh-cost-meter price snapshot (2026-09-30), and custom USD/million-token rates. Long-context and historical DeepSeek peak tiers are calculated per request. Positive saved estimates are retained unless explicitly overridden. Subscription equivalents are separate from API cost estimates; unknown prices are marked. The sidebar Usage popover shows a rolling **last 24 hours** window.
+
+The same page shows quota windows, used/remaining percentages and reset times for OpenCode Go, Kimi Code, MiniMax Token Plan, GLM Coding Plan and Claude Pro/Max. Absolute provider quotas are shown when supplied. Credentials come from configured official routes, Pi auth, environment variables or OpenCode login; credential commands and OAuth renewal are not executed. Visible pages refresh every minute and retain timestamped previous data on failures. Percentage-only APIs are never converted into invented token limits.
+
 [English](README.md) · [简体中文](README.zh-CN.md)
 
 Pi Studio is an independent Electron desktop client for the [Pi coding agent](https://github.com/earendil-works/pi). It brings Pi projects, threads, model configuration, extensions, permission controls, automation, and file previews into one desktop workspace.
@@ -31,6 +37,8 @@ The current interface brings the main workspace, plugin manager, public Skills H
 
 ## Recent additions
 
+- **Consistent model lists** — For providers with an explicit model list, the thread picker shows only the saved, available models instead of merging in the provider's built-in catalog. Saving settings refreshes open threads.
+- **Office previews** — Local, read-only Univer spreadsheets with sheet tabs, a formula bar, zoom, common XLSX styles, merged cells, row/column dimensions and frozen panes. DOCX previews retain pages, headers, footers and tables with fit-to-width zoom. No conversion server or document upload is needed. Charts, drawings, pivots and conditional formatting are not fully imported; large workbooks have explicit preview limits. PPTX retains its existing basic preview.
 - **Plugin manager** — Search, install, update, enable, disable, and remove Pi extension packages from npm, GitHub, or local paths. The same panel also lists skills discovered in Pi's shared and project directories.
 - **Skills Hub** — Browse and search the public [skills.sh](https://skills.sh/) directory, inspect a skill's details and install command, and install it directly into Pi.
 - **Android remote companion** — Pair an Android device with a desktop host through a short-lived QR ticket, configure the Signal WSS endpoint, view connection state, and manage trusted devices. The remote transport uses direct WebRTC with STUN discovery; TURN/relay candidates are intentionally rejected. Remote project-relative previews include bounded Excel/CSV table snapshots for Pi-Studio-Remote 0.2.
@@ -53,17 +61,17 @@ The current interface brings the main workspace, plugin manager, public Skills H
 
 Download the latest `Pi-Studio-Setup-<version>.exe` for Windows x64 or `Pi-Studio-<version>-arm64.dmg` for Apple Silicon macOS from GitHub Releases. The installers are currently unsigned, so Windows SmartScreen or macOS Gatekeeper may show a warning.
 
-Each installer contains a native pinned Node.js + Pi runtime. On first launch, Pi Studio verifies and extracts that embedded runtime into the user data directory. Later app updates reuse the extracted runtime without any runtime download.
+Each installer contains a native pinned Node.js + Pi runtime. On first launch, Pi Studio verifies and extracts that embedded runtime into the user data directory. App updates promote a newer embedded runtime while reusing an installed runtime of the same or a newer version, without a separate download.
 
 ## Development requirements
 
 - Windows x64 and macOS arm64 are the supported packaging targets.
 - Node.js `24.14.0` or newer within the Node 24 major version for development and packaging.
 - npm.
-- A global Pi coding agent installation is required by the packaging script:
+- Install an isolated Pi coding agent runtime in the project for development and packaging:
 
 ```powershell
-npm install -g @earendil-works/pi-coding-agent@0.84.1
+npm install --global --prefix .runtime-source @earendil-works/pi-coding-agent@0.99.1
 ```
 
 ## Development
@@ -84,7 +92,13 @@ npm run dist              # Bundle, build, and create the installer
 npm run pack              # Create an unpacked directory build
 ```
 
-Build output is written to `release/`. `npm run dist` creates the Electron installer with the runtime archive embedded inside it; the generated archive in `release/` is retained for QA and does not need to be uploaded separately. The repository pins Pi runtime `0.84.1` in `package.json`, and the packaging script verifies that version before creating the archive. To package from a specific local installation, set `PI_PACKAGE_DIR` to its package directory.
+Build output is written to `release/`. `npm run dist` creates the Electron installer with the runtime archive embedded inside it; the generated archive in `release/` is retained for QA and does not need to be uploaded separately. The repository pins Pi runtime `0.99.1` in `package.json`. Packaging prefers `.runtime-source` and also accepts a matching global installation. To package from a specific local installation, set `PI_PACKAGE_DIR` to its package directory.
+
+Settings → Token usage offers a green heatmap with daily, weekly and cumulative views, date filters, input/output/cache totals, model breakdowns and estimated costs. Usage comes from saved sessions with forked records deduplicated.
+
+Settings → MCP manages global `mcpServers` JSON: add/edit, enable/disable, remove, check connections and tools, and OAuth sign-in/sign-out. stdio and Streamable HTTP use Pi's built-in MCP support, including Codemode and tool search. Run `/reload` in chat or reopen it after saving. Nested tool calls, extension statuses and text widgets are displayed in chat.
+
+Run `npm run test:usage-mcp` and `npm run test:settings-ui` for feature checks. After `npm run bundle`, `npm run test:runtime-mcp` checks the packaged upgrade and actual nested MCP execution using isolated settings and local model/MCP fixtures without user credentials.
 
 ## Configuration and data
 

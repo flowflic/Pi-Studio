@@ -2,6 +2,7 @@ import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { replyTimings } from "./reply-timing";
 
 /**
  * Zero-dependency reader for pi's session store (~/.pi/agent/sessions).
@@ -42,7 +43,7 @@ export interface ProjectSummary {
 }
 
 export function getAgentDir(): string {
-  return process.env.PI_AGENT_DIR || join(homedir(), ".pi", "agent");
+  return process.env.PI_CODING_AGENT_DIR || process.env.PI_AGENT_DIR || join(homedir(), ".pi", "agent");
 }
 
 export function getSessionsDir(): string {
@@ -50,7 +51,7 @@ export function getSessionsDir(): string {
 }
 
 /** Stream a file line-by-line using only `\n` as delimiter (JSONL-safe). */
-function forEachLine(file: string, onLine: (line: string) => void): Promise<void> {
+export function forEachLine(file: string, onLine: (line: string) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     const decoder = new StringDecoder("utf8");
     let buf = "";
@@ -198,7 +199,7 @@ export interface ThreadHistory {
   thinkingLevel: string | null;
   messages: any[];
   /** Stable ids for user/assistant messages used by message-level branching. */
-  branchMessages: { entryId: string; role: "user" | "assistant"; text: string }[];
+  branchMessages: { entryId: string; role: "user" | "assistant"; text: string; replyStartedAt?: number; replyEndedAt?: number }[];
 }
 
 export async function readThreadHistory(file: string): Promise<ThreadHistory> {
@@ -208,6 +209,7 @@ export async function readThreadHistory(file: string): Promise<ThreadHistory> {
   let thinkingLevel: string | null = null;
   const messages: any[] = [];
   const branchMessages: { entryId: string; role: "user" | "assistant"; text: string }[] = [];
+  const timingEntries: any[] = [];
   await forEachLine(file, (line) => {
     let e: any;
     try {
@@ -217,6 +219,9 @@ export async function readThreadHistory(file: string): Promise<ThreadHistory> {
     }
     if (!e || typeof e !== "object") return;
     switch (e.type) {
+      case "custom":
+        if (e.customType === "pi-studio-reply-timing") timingEntries.push(e);
+        break;
       case "session":
         if (e.cwd) cwd = e.cwd;
         break;
@@ -242,7 +247,8 @@ export async function readThreadHistory(file: string): Promise<ThreadHistory> {
         break;
     }
   });
-  return { cwd, sessionName, model, thinkingLevel, messages, branchMessages };
+  const timings = replyTimings(timingEntries);
+  return { cwd, sessionName, model, thinkingLevel, messages, branchMessages: branchMessages.map(message => ({ ...message, ...timings.get(message.entryId) })) };
 }
 
 export interface ThreadSearchHit {

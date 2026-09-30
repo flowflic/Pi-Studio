@@ -1,4 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { replyTimings } from "./reply-timing";
+import { getUsageReport } from "./usage-service";
+import { readPricingConfig, writePricingConfig, pricingCatalog, PRICING_SNAPSHOT } from "./usage-pricing";
+import { getPlanQuotas } from "./plan-quotas";
+import { readMcpConfig, writeMcpConfig } from "./mcp-service";
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -87,6 +92,7 @@ interface BridgeHandle {
   setId: (n: string) => void;
   permission: PermissionLevel;
   gateModeFile: string;
+  replyStartedAt?: number;
 }
 
 const bridges = new Map<string, BridgeHandle>();
@@ -305,6 +311,7 @@ function createHandle(
     onEvent: (e) => {
       const event: any = e;
       if (event?.type === "agent_start") {
+        handle.replyStartedAt ??= Date.now();
         turnStarted = true;
         completedReply = null;
       }
@@ -318,9 +325,12 @@ function createHandle(
         completedReply = finalAssistantReply(event.message);
       }
 
-      send("pi:event", { threadId: id, event });
+      send("pi:event", { threadId: id, event: event?.type === "agent_start"
+        ? { ...event, replyStartedAt: handle.replyStartedAt }
+        : event?.type === "agent_settled" ? { ...event, replyEndedAt: Date.now() } : event });
 
       if (event?.type === "agent_settled") {
+        handle.replyStartedAt = undefined;
         const shouldNotify = turnStarted;
         const reply = completedReply;
         const prompt = promptForNotification;
@@ -498,6 +508,7 @@ async function gatherThread(bridge: PiBridge, threadId: string, permission: Perm
     model: state.model ?? null,
     thinkingLevel: state.thinkingLevel ?? "off",
     isStreaming: !!state.isStreaming,
+    replyStartedAt: state.isStreaming ? bridges.get(threadId)?.replyStartedAt : undefined,
     messages: msgRes?.messages ?? [],
     branchMessages: activeBranchMessages(entriesRes),
     models: modelsRes?.models ?? [],
@@ -509,7 +520,7 @@ async function gatherThread(bridge: PiBridge, threadId: string, permission: Perm
 /** Resolve visible user/assistant messages on the active entry branch to their
  * stable session ids. Walking parent links avoids targeting an identically
  * worded reply that belongs to an inactive branch. */
-function activeBranchMessages(entriesRes: any): { entryId: string; role: "user" | "assistant"; text: string }[] {
+function activeBranchMessages(entriesRes: any): { entryId: string; role: "user" | "assistant"; text: string; replyStartedAt?: number; replyEndedAt?: number }[] {
   const entries = Array.isArray(entriesRes?.entries) ? entriesRes.entries : [];
   const byId = new Map(entries.map((entry: any) => [entry?.id, entry]));
   const branch: any[] = [];
@@ -521,7 +532,8 @@ function activeBranchMessages(entriesRes: any): { entryId: string; role: "user" 
     entry = entry.parentId ? byId.get(entry.parentId) : undefined;
   }
   branch.reverse();
-  const result: { entryId: string; role: "user" | "assistant"; text: string }[] = [];
+  const timings = replyTimings(branch);
+  const result: { entryId: string; role: "user" | "assistant"; text: string; replyStartedAt?: number; replyEndedAt?: number }[] = [];
   for (const item of branch) {
     const role = item?.message?.role;
     if (item?.type !== "message" || (role !== "user" && role !== "assistant")) continue;
@@ -532,7 +544,7 @@ function activeBranchMessages(entriesRes: any): { entryId: string; role: "user" 
         : Array.isArray(content)
           ? content.map((block: any) => (block?.type === "text" ? block.text || "" : "")).filter(Boolean).join("\n")
           : "";
-    result.push({ entryId: item.id, role, text });
+    result.push({ entryId: item.id, role, text, ...timings.get(item.id) });
   }
   return result;
 }
@@ -1644,6 +1656,21 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   });
 
   ipcMain.handle("app:getTotalUsage", () => getTotalUsage());
+  ipcMain.handle("settings:getUsage", (_e, range: { from: number; to: number }) => getUsageReport(range));
+  ipcMain.handle("settings:getUsagePricing", () => ({ config: readPricingConfig(), catalog: pricingCatalog(), snapshot: PRICING_SNAPSHOT }));
+  ipcMain.handle("settings:saveUsagePricing", (_e, config: unknown) => writePricingConfig(config));
+  ipcMain.handle("settings:getPlanQuotas", (_e, force?: boolean) => getPlanQuotas(force === true));
+  ipcMain.handle("settings:getMcp", () => readMcpConfig());
+  ipcMain.handle("settings:saveMcp", (_e, config: unknown) => {
+    const result = writeMcpConfig(config);
+    dropWarmBridge();
+    return result;
+  });
+  ipcMain.handle("settings:mcpAction", async (_e, args: { action: string; name?: string }) => {
+    if (!["list", "login", "logout"].includes(args?.action)) throw new Error("Invalid MCP action");
+    if (args.action !== "list" && (!args.name || !/^[a-zA-Z0-9_-]+$/.test(args.name))) throw new Error("Invalid MCP server name");
+    return runPiCli(["mcp", args.action, ...(args.action === "list" ? [] : [args.name!])], undefined, args.action === "login" ? 300_000 : 90_000);
+  });
 
   ipcMain.handle("app:openProject", async (_e, absPath: string) => {
     if (!absPath || !existsSync(absPath) || !statSync(absPath).isDirectory()) {
@@ -1995,8 +2022,8 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     if (!h) throw new Error("Thread not open: " + args.threadId);
     const { text, images } = processAttachments(args.attachments, args.text || "");
     const merged = [...(args.images || []), ...images];
-    await h.bridge.prompt(text, merged.length ? merged : undefined);
-    return { ok: true };
+    const response = await h.bridge.prompt(text, merged.length ? merged : undefined);
+    return { ok: true, ...(response && typeof response === "object" ? response : {}) };
   });
 
   ipcMain.handle("thread:steer", async (_e, args: { threadId: string; text: string; images?: unknown[]; attachments?: Attachment[] }) => {

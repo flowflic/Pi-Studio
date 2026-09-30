@@ -39,6 +39,9 @@
   --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", "SF Mono", Consolas, "Liberation Mono", monospace;
 }
 
+.extension-widget { margin: 4px 24px; padding: 10px 14px; background: var(--surface-muted); color: var(--text-dim); font-size: 12px; white-space: pre-wrap; max-height: 160px; overflow: auto; border-radius: 8px; }
+.extension-statuses { display: flex; gap: 16px; flex-wrap: wrap; padding: 4px 24px 8px; color: var(--text-dim); font-size: 12px; }
+
 * {
   box-sizing: border-box;
 }
@@ -1577,6 +1580,8 @@ body.sidebar-resizing * {
   opacity: 0;
   transition: opacity 0.12s;
 }
+.reply-duration { font-variant-numeric: tabular-nums; }
+.reply-duration[data-running] { color: var(--accent); }
 .msg:hover .msg-actions {
   opacity: 1;
 }
@@ -2912,6 +2917,10 @@ body.preview-resizing * {
   overflow: hidden;
   padding: 0;
   background: var(--preview-bg);
+}
+.preview-body.office-preview-active {
+  overflow: hidden;
+  padding: 0;
 }
 .pv-empty {
   height: 100%;

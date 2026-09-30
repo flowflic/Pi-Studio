@@ -5,11 +5,12 @@ export interface FileArtifact {
   name: string;
   displayPath: string;
   ext: string;
-  action: "created" | "updated";
+  action: "created" | "updated" | "presented";
+  description?: string;
 }
 
 const FILE_TOOL = /(?:^|[_-])(write|edit|create|save|export)(?:[_-]|$)/i;
-const COMMAND_TOOL = /(?:^|[_-])(bash|shell|exec|execute|command|run|python)(?:[_-]|$)/i;
+const COMMAND_TOOL = /(?:^|[_-])(bash|shell|exec|execute|command|run|python|powershell|pwsh)(?:[_-]|$)/i;
 const OUTPUT_HINT = /(?:已生成|已创建|已保存|已就绪|输出(?:文件|路径)?|生成(?:文件|路径)?|保存(?:为|到|路径)?|写入(?:到)?|产物|generated|created|saved|written|output|exported|ready at)/i;
 const OUTPUT_EXTENSIONS =
   "html?|pdf|csv|xlsx?|docx|pptx|json|md|txt|xml|svg|png|jpe?g|gif|webp|zip|tar|gz|mp4|webm|py|js|jsx|ts|tsx|css";
@@ -48,6 +49,7 @@ function pathFromArgs(args: unknown): string | null {
 function normalizeSegments(path: string): string {
   const slash = path.replace(/\\/g, "/");
   const drive = slash.match(/^([a-zA-Z]:)(\/|$)/)?.[1] || "";
+  const unc = slash.startsWith("//");
   const rooted = !!drive || slash.startsWith("/");
   const body = drive ? slash.slice(drive.length) : slash;
   const parts: string[] = [];
@@ -60,7 +62,7 @@ function normalizeSegments(path: string): string {
     }
     parts.push(part);
   }
-  const prefix = drive ? `${drive}/` : rooted ? "/" : "";
+  const prefix = drive ? `${drive}/` : unc ? "//" : rooted ? "/" : "";
   return prefix + parts.join("/");
 }
 
@@ -136,7 +138,9 @@ export function collectFileArtifacts(
   const roundToolIds = new Set<string>();
 
   const addArtifact = (rawPath: string, action: FileArtifact["action"]) => {
-    const path = resolveArtifactPath(rawPath, cwd);
+    const cleaned = cleanPath(rawPath);
+    if (!cleaned) return;
+    const path = resolveArtifactPath(cleaned, cwd);
     const name = basename(path);
     const key = path.toLowerCase();
     const next: FileArtifact = {
@@ -183,4 +187,50 @@ export function collectFileArtifacts(
   }
 
   return [...byPath.values()];
+}
+
+/** Final delivery selection, independent of the list of files touched by tools. */
+export function selectFinalArtifacts(messages: ViewMessage[], toolRuns: Record<string, ToolRun>, cwd: string): FileArtifact[] {
+  let presented: FileArtifact[] | undefined;
+  for (const message of messages) {
+    for (const block of message.blocks || []) {
+      if (block.type !== "toolCall" || block.name !== "pi_studio_present") continue;
+      const run = toolRuns[block.id];
+      if (!run?.completed || run.running || run.isError) continue;
+      try {
+        const result = JSON.parse(run.resultText || "");
+        if (result.kind !== "pi-studio-deliverables" || result.version !== 1 || !Array.isArray(result.files)) continue;
+        if (!result.files.length || result.files.length > 20 || result.files.some((file: any) => typeof file?.path !== "string" || !file.path.trim())) continue;
+        const unique = new Map<string, FileArtifact>();
+        for (const file of result.files) {
+          const path = resolveArtifactPath(file.path, cwd);
+          const name = basename(path);
+          unique.set(path.toLowerCase(), { path, name, displayPath: relativeDisplayPath(path, cwd), ext: extension(name), action: "presented", description: typeof file.description === "string" ? file.description : undefined });
+        }
+        presented = [...unique.values()];
+      } catch { /* Incomplete or incompatible results are not delivery declarations. */ }
+    }
+  }
+  if (presented !== undefined) return presented;
+
+  // Older sessions have no presentation tool. Only a final response referencing
+  // a successful output of this round can promote that output to a delivery.
+  const final = messages[messages.length - 1];
+  if (!final || final.errorMessage || final.blocks?.some(block => block.type === "toolCall")) return [];
+  const text = (final.blocks || []).filter(block => block.type === "text").map(block => block.text || "").join("\n").replace(/```[\s\S]*?```/g, "");
+  const references: string[] = [];
+  for (const match of text.matchAll(/\[[^\]]*\]\((?:<([^>]+)>|([^\s)]+))\)/g)) {
+    try { references.push(decodeURIComponent(match[1] || match[2])); } catch { /* Bad URI escape. */ }
+  }
+  for (const match of text.matchAll(/`([^`\n]+)`/g)) references.push(match[1]);
+  references.push(...outputPathsFromText(text, true));
+  const candidates = collectFileArtifacts(messages, toolRuns, cwd);
+  return candidates.filter(candidate => references.some(reference => {
+    if (/^[a-z][a-z\d+.-]*:\/\//i.test(reference)) return false;
+    const normalized = resolveArtifactPath(reference, cwd).toLowerCase();
+    if (normalized === candidate.path.toLowerCase()) return true;
+    // A basename is safe only when it identifies exactly one output this round.
+    return !/[\\/]/.test(reference) && reference.toLowerCase() === candidate.name.toLowerCase()
+      && candidates.filter(file => file.name.toLowerCase() === candidate.name.toLowerCase()).length === 1;
+  }));
 }

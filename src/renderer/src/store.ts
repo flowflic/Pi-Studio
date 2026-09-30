@@ -582,7 +582,7 @@ const newAssistant = (key?: string): ViewMessage => ({ key: key || `a-${uid()}`,
  * inactive branch. */
 function attachBranchEntryIds(
   messages: ViewMessage[],
-  branchMessages: { entryId: string; role: "user" | "assistant"; text: string }[] | undefined,
+  branchMessages: { entryId: string; role: "user" | "assistant"; text: string; replyStartedAt?: number; replyEndedAt?: number }[] | undefined,
 ): ViewMessage[] {
   if (!branchMessages?.length) return messages;
   let cursor = 0;
@@ -609,19 +609,22 @@ function attachBranchEntryIds(
     }
     if (match < 0) return message;
     cursor = match + 1;
-    return { ...message, branchEntryId: branchMessages[match].entryId };
+    const matched = branchMessages[match];
+    return { ...message, branchEntryId: matched.entryId,
+      replyStartedAt: matched.replyStartedAt ?? message.replyStartedAt,
+      replyEndedAt: matched.replyEndedAt ?? message.replyEndedAt };
   });
 }
 
 /** Convert a flat list of pi AgentMessages into renderable views + initial tool runs. */
 function historyToView(
   messages: any[],
-  branchMessages?: { entryId: string; role: "user" | "assistant"; text: string }[],
+  branchMessages?: { entryId: string; role: "user" | "assistant"; text: string; replyStartedAt?: number; replyEndedAt?: number }[],
 ): { views: ViewMessage[]; toolRuns: Record<string, ToolRun> } {
-  const toolResultById: Record<string, { text: string; isError: boolean }> = {};
+  const toolResultById: Record<string, { text: string; isError: boolean; nestedCalls?: ToolRun["nestedCalls"] }> = {};
   for (const m of messages || []) {
     if (m?.role === "toolResult" && m.toolCallId) {
-      toolResultById[m.toolCallId] = { text: textOfContent(m.content), isError: !!m.isError };
+      toolResultById[m.toolCallId] = { text: textOfContent(m.content), isError: !!m.isError, nestedCalls: m.nestedCalls };
     }
   }
   const views: ViewMessage[] = [];
@@ -652,6 +655,7 @@ function historyToView(
             completed: !!tr,
             isError: tr?.isError,
             resultText: tr?.text,
+            nestedCalls: tr?.nestedCalls,
           };
         }
       }
@@ -661,7 +665,7 @@ function historyToView(
         blocks,
         timestamp: m.timestamp,
         provider: m.provider,
-        model: m.model,
+        model: m.responseModel || m.model,
         stopReason: m.stopReason,
         errorMessage: m.errorMessage,
       });
@@ -722,6 +726,13 @@ function emptyThread(cwd: string): ThreadState {
 
 function threadFromResponse(res: any, fallback: ThreadState, pendingEditorText?: string): ThreadState {
   const { views, toolRuns } = historyToView(res.messages || [], res.branchMessages || []);
+  const replyStartedAt = res.isStreaming ? res.replyStartedAt ?? fallback.replyStartedAt : undefined;
+  if (replyStartedAt !== undefined) {
+    for (let i = views.length - 1; i >= 0 && views[i].role === "assistant"; i--) {
+      if (views[i].replyEndedAt !== undefined) break;
+      views[i].replyStartedAt = replyStartedAt;
+    }
+  }
   return {
     ...emptyThread(res.cwd || fallback.cwd),
     sessionFile: res.sessionFile,
@@ -733,10 +744,14 @@ function threadFromResponse(res: any, fallback: ThreadState, pendingEditorText?:
     commands: res.commands || [],
     connected: true,
     isStreaming: !!res.isStreaming,
+    replyStartedAt,
+    streaming: replyStartedAt !== undefined && views[views.length - 1]?.role !== "assistant" ? { ...newAssistant(), replyStartedAt } : null,
     messages: views,
     toolRuns,
     permission: res.permission || fallback.permission || "sandbox",
     pendingEditorText,
+    extensionStatuses: fallback.extensionStatuses,
+    extensionWidgets: fallback.extensionWidgets,
   };
 }
 
@@ -746,14 +761,29 @@ function threadFromResponse(res: any, fallback: ThreadState, pendingEditorText?:
 
 function reduceThread(t: ThreadState, event: any): ThreadState {
   if (!event || typeof event !== "object") return t;
+  if (event.parentToolCallId && String(event.type).startsWith("tool_execution_")) {
+    const parent = t.toolRuns[event.parentToolCallId];
+    if (!parent) return t;
+    const calls = [...(parent.nestedCalls?.calls || [])];
+    const idx = calls.findIndex(c => c.id === event.toolCallId);
+    const prev = idx < 0 ? undefined : calls[idx];
+    const call = { ...prev, id: String(event.toolCallId), name: String(event.toolName || prev?.name || "tool"), arguments: event.args || prev?.arguments, status: (event.type === "tool_execution_end" ? event.isError ? "error" : "ok" : "unfinished") as "ok" | "error" | "unfinished", error: event.isError ? textOfContent(event.result?.content) : undefined };
+    if (idx < 0) calls.push(call); else calls[idx] = call;
+    return { ...t, toolRuns: { ...t.toolRuns, [event.parentToolCallId]: { ...parent, nestedCalls: { calls, complete: calls.every(c => c.status !== "unfinished") } } } };
+  }
   switch (event.type) {
-    case "agent_start":
-      return { ...t, isStreaming: true, error: undefined };
+    case "agent_start": {
+      const replyStartedAt = t.replyStartedAt ?? event.replyStartedAt ?? Date.now();
+      return { ...t, isStreaming: true, replyStartedAt,
+        streaming: t.streaming || { ...newAssistant(), replyStartedAt }, error: undefined };
+    }
     case "agent_settled": {
       // If a streaming assistant message never got message_end, finalize it.
-      const streaming = t.streaming;
-      if (!streaming) return { ...t, isStreaming: false };
-      return { ...t, isStreaming: false, streaming: null, messages: [...t.messages, streaming] };
+      const endedAt = event.replyEndedAt ?? Date.now();
+      const messages = t.streaming ? [...t.messages, t.streaming] : t.messages;
+      return { ...t, isStreaming: false, replyStartedAt: undefined, streaming: null,
+        messages: messages.map(message => message.role === "assistant" && message.replyStartedAt === t.replyStartedAt && t.replyStartedAt !== undefined
+          ? { ...message, replyEndedAt: endedAt } : message) };
     }
     case "message_start": {
       const m = event.message;
@@ -799,7 +829,7 @@ function reduceThread(t: ThreadState, event: any): ThreadState {
         return { ...t, messages: [...t.messages, view] };
       }
       if (m.role === "assistant") {
-        return { ...t, streaming: newAssistant() };
+        return { ...t, streaming: { ...newAssistant(), replyStartedAt: t.replyStartedAt } };
       }
       return t;
     }
@@ -811,7 +841,7 @@ function reduceThread(t: ThreadState, event: any): ThreadState {
           ...t.streaming,
           blocks: reconciled.blocks,
           provider: m.provider || t.streaming.provider,
-          model: m.model || t.streaming.model,
+          model: m.responseModel || m.model || t.streaming.model,
           stopReason: m.stopReason,
           errorMessage: m.errorMessage,
           timestamp: m.timestamp || t.streaming.timestamp,
@@ -823,7 +853,7 @@ function reduceThread(t: ThreadState, event: any): ThreadState {
     case "message_update": {
       const ame = event.assistantMessageEvent;
       if (!ame) return t;
-      const s = t.streaming || newAssistant();
+      const s = t.streaming || { ...newAssistant(), replyStartedAt: t.replyStartedAt };
       let blocks = s.blocks || [];
       // Copy-on-write: text/thinking deltas (the overwhelmingly common case)
       // must NOT create a new toolRuns object, or every memoized consumer of
@@ -990,6 +1020,7 @@ function reduceThread(t: ThreadState, event: any): ThreadState {
             completed: true,
             isError: !!event.isError,
             resultText: textOfContent(event.result?.content),
+            nestedCalls: event.result?.nestedCalls || prev.nestedCalls,
             partialText: undefined,
             startedAt: prev.startedAt || endedAt,
             endedAt,
@@ -1540,11 +1571,12 @@ export const useStore = create<PiStore>()((set, get) => ({
       // process in the background — no blocking "starting pi" spinner.
       try {
         const hist: any = await window.pi.thread.loadHistory({ cwd, sessionFile });
-        const { views, toolRuns } = historyToView(hist.messages || [], hist.branchMessages || []);
+        const hydrated = threadFromResponse(hist, emptyThread(hist.cwd || cwd));
+        const views = hydrated.messages;
         const sidebarTitle = findProjectThreadTitle(get().projects, hist.sessionFile || sessionFile);
         const firstUserText = views.find((message) => message.role === "user")?.text || "";
         const thread: ThreadState = {
-          ...emptyThread(hist.cwd || cwd),
+          ...hydrated,
           sessionFile: hist.sessionFile || sessionFile,
           sessionName: getDisplayThreadTitle(sidebarTitle || hist.sessionName, firstUserText, get().config?.language || "en") || null,
           isNewSession: false,
@@ -1557,7 +1589,7 @@ export const useStore = create<PiStore>()((set, get) => ({
           connected: !!hist.connected,
           isStreaming: !!hist.isStreaming,
           messages: views,
-          toolRuns,
+          toolRuns: hydrated.toolRuns,
           permission: hist.permission || permission || "sandbox",
         };
         set((s) => ({
@@ -1615,6 +1647,7 @@ export const useStore = create<PiStore>()((set, get) => ({
         const { views, toolRuns } = historyToView(res.messages || [], res.branchMessages || []);
         set((s) => {
           const prev = s.threads[threadId] || s.threads[id];
+          const hydrated = threadFromResponse(res, prev || t);
           // Preserve optimistic user bubbles added before the connect finished
           // (e.g. a fast first send on a brand-new thread); live history never
           // contains them, so without this they would be dropped on merge/remap.
@@ -1633,7 +1666,7 @@ export const useStore = create<PiStore>()((set, get) => ({
           const sidebarTitle = findProjectThreadTitle(s.projects, currentFile);
           const firstUserText = (prev?.messages || views).find((message) => message.role === "user")?.text || "";
           const merged: ThreadState = {
-            ...emptyThread(res.cwd || t.cwd),
+            ...hydrated,
             sessionFile: res.sessionFile || t.sessionFile,
             sessionName: freshSession
               ? null
@@ -1651,10 +1684,12 @@ export const useStore = create<PiStore>()((set, get) => ({
             loading: false,
             connected: true,
             isStreaming: !!res.isStreaming || optimistic.length > 0,
-            messages: optimistic.length ? [...views, ...optimistic] : views,
+            messages: optimistic.length ? [...hydrated.messages, ...optimistic] : hydrated.messages,
             toolRuns,
             permission: res.permission || t.permission,
             pendingEditorText: prev?.pendingEditorText,
+            extensionStatuses: prev?.extensionStatuses,
+            extensionWidgets: prev?.extensionWidgets,
           };
           const threads: Record<string, ThreadState> = { ...s.threads, [id]: merged };
           let openThreadIds = s.openThreadIds;
@@ -1809,7 +1844,10 @@ export const useStore = create<PiStore>()((set, get) => ({
           await window.pi.thread.steer({ threadId: tid, text: trimmed, images: piImages, attachments });
         }
       } else {
-        await window.pi.thread.prompt({ threadId: tid, text: trimmed, images: piImages, attachments });
+        const response = await window.pi.thread.prompt({ threadId: tid, text: trimmed, images: piImages, attachments });
+        if (response?.disposition === "handled") {
+          set((s) => { const t = s.threads[tid]; return t ? { threads: { ...s.threads, [tid]: { ...t, isStreaming: false } } } : s; });
+        }
       }
       // Pi creates/persists a new session lazily on its first prompt.
       await get().refreshProjects();
@@ -1817,7 +1855,7 @@ export const useStore = create<PiStore>()((set, get) => ({
       set((s) => {
         const t = s.threads[tid];
         if (!t) return s;
-        return { threads: { ...s.threads, [tid]: { ...t, isStreaming: false, error: e?.message || "prompt failed" } } };
+        return { threads: { ...s.threads, [tid]: { ...reduceThread(t, { type: "agent_settled" }), error: e?.message || "prompt failed" } } };
       });
       get().pushToast("error", e?.message || "prompt failed");
     }
@@ -2109,7 +2147,23 @@ export const useStore = create<PiStore>()((set, get) => ({
       if (req.title) document.title = String(req.title);
       return;
     }
-    if (m === "setStatus" || m === "setWidget") return; // not surfaced yet
+    if (m === "setStatus" || m === "setWidget") {
+      set((s) => {
+        const thread = s.threads[threadId];
+        if (!thread) return s;
+        if (m === "setStatus") {
+          const statuses = { ...thread.extensionStatuses };
+          if (req.statusText == null) delete statuses[String(req.statusKey)];
+          else statuses[String(req.statusKey)] = String(req.statusText).replace(/\x1b\[[0-9;]*m/g, "");
+          return { threads: { ...s.threads, [threadId]: { ...thread, extensionStatuses: statuses } } };
+        }
+        const widgets = { ...thread.extensionWidgets };
+        if (!Array.isArray(req.widgetLines)) delete widgets[String(req.widgetKey)];
+        else widgets[String(req.widgetKey)] = { lines: req.widgetLines.map((line: unknown) => String(line).replace(/\x1b\[[0-9;]*m/g, "")), placement: req.widgetPlacement === "belowEditor" ? "belowEditor" : "aboveEditor" };
+        return { threads: { ...s.threads, [threadId]: { ...thread, extensionWidgets: widgets } } };
+      });
+      return;
+    }
     // dialog methods -> queue
     if (m === "select" || m === "confirm" || m === "input" || m === "editor") {
       set((s) => ({
@@ -2133,7 +2187,7 @@ export const useStore = create<PiStore>()((set, get) => ({
     set((s) => {
       const t = s.threads[threadId];
       if (!t) return s;
-      return { threads: { ...s.threads, [threadId]: { ...t, isStreaming: false, streaming: null, error: `pi exited (code ${info.code})` } } };
+      return { threads: { ...s.threads, [threadId]: { ...reduceThread(t, { type: "agent_settled" }), error: `pi exited (code ${info.code})` } } };
     });
     const tail = (info.stderr || "").trim().split(/\r?\n/).slice(-3).join(" | ");
     get().pushToast("error", `pi process exited (${info.code})${tail ? ": " + tail : ""}`);

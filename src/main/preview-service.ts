@@ -4,7 +4,8 @@ import XLSX from "xlsx";
 
 /**
  * Reads a file and returns a renderer-friendly preview payload. Heavy parsing
- * (pdf/docx/xlsx) is done in the renderer with pdfjs / mammoth / sheetjs; here
+ * Office rendering is done locally in the renderer with docx-preview and
+ * Univer (SheetJS + OOXML metadata for local workbook import); here
  * we only classify by extension and return either text or base64 bytes. The
  * remote companion uses readRemotePreview below for a bounded table snapshot
  * instead of receiving the raw workbook binary.

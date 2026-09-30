@@ -1,0 +1,112 @@
+const fs = require("node:fs");
+const path = require("node:path");
+const http = require("node:http");
+const { spawn, execFileSync } = require("node:child_process");
+const assert = require("node:assert/strict");
+const root = path.resolve(__dirname, "..");
+const temp = fs.mkdtempSync(path.join(root, ".tmp-runtime-test-"));
+let proc, server;
+const originalResourcesPath = process.resourcesPath;
+(async () => {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, "resources/runtime-manifest.json")));
+    assert.equal(manifest.runtimeVersion, "0.99.1");
+    const archive = path.join(root, "runtime-release", manifest.fileName);
+    assert.equal(fs.statSync(archive).size, manifest.size);
+    assert.equal(require("node:crypto").createHash("sha512").update(fs.readFileSync(archive)).digest("base64"), manifest.sha512);
+    // Simulate upgrading an installed app whose active runtime is still 0.84.1.
+    const configDir = path.join(temp, "user-data");
+    const old = path.join(configDir, "runtime", "versions", "0.84.1");
+    fs.mkdirSync(path.join(old, "pi", "dist"), { recursive: true }); fs.mkdirSync(path.join(old, "node"));
+    fs.writeFileSync(path.join(old, "node", process.platform === "win32" ? "node.exe" : "node"), "old runtime");
+    fs.writeFileSync(path.join(old, "pi", "dist", "cli.js"), "old runtime");
+    fs.writeFileSync(path.join(old, "pi", "package.json"), JSON.stringify({ version: "0.84.1" }));
+    fs.writeFileSync(path.join(configDir, "runtime", "current.json"), JSON.stringify({ schema: 1, version: "0.84.1" }));
+    const resources = path.join(temp, "resources"); fs.mkdirSync(path.join(resources, "runtime-package"), { recursive: true });
+    fs.writeFileSync(path.join(resources, "runtime-manifest.json"), JSON.stringify(manifest));
+    fs.linkSync(archive, path.join(resources, "runtime-package", manifest.fileName));
+    process.resourcesPath = resources;
+    const source = require("typescript").transpileModule(fs.readFileSync(path.join(root, "src/main/runtime-package.ts"), "utf8"), { compilerOptions: { target: 9, module: 1 } }).outputText;
+    const runtimeApi = {};
+    new Function("require", "exports", source)(name => name === "electron" ? { app: { isPackaged: true } } : name === "./config" ? { getConfigDir: () => configDir } : require(name), runtimeApi);
+    const runtime = await runtimeApi.ensureRuntimePackage();
+    assert.equal(JSON.parse(fs.readFileSync(path.join(configDir, "runtime", "current.json"))).version, "0.99.1", "embedded runtime promotes older installs");
+    assert.equal(await runtimeApi.ensureRuntimePackage(), runtime, "current runtime is reused");
+    const node = path.join(runtime, "node", process.platform === "win32" ? "node.exe" : "node");
+    const cli = path.join(runtime, "pi", "dist", "cli.js");
+    assert.equal(execFileSync(node, [cli, "--version"], { encoding: "utf8" }).trim(), "0.99.1");
+    const agentDir = path.join(temp, "agent"); fs.mkdirSync(agentDir);
+    const fixture = path.join(temp, "fixture.cjs");
+    fs.writeFileSync(fixture, `const readline=require('node:readline'); const rl=readline.createInterface({input:process.stdin}); rl.on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;let result={};if(m.method==='initialize')result={protocolVersion:'2025-03-26',capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1.0'}};if(m.method==='tools/list')result={tools:[{name:'echo',description:'Echo text',inputSchema:{type:'object',properties:{text:{type:'string'}},required:['text']},annotations:{readOnlyHint:true}}]};if(m.method==='tools/call')result={content:[{type:'text',text:'mcp-echo:'+m.params.arguments.text}]};process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`);
+    fs.writeFileSync(path.join(agentDir, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { command: node, args: [fixture], exposure: "codemode" } } }));
+    let completions = 0;
+    server = http.createServer((req, res) => {
+      let data = ""; req.on("data", d => data += d); req.on("end", () => {
+        const body = JSON.parse(data); assert.ok(body.tools.some(t => t.function.name === "codemode"), "codemode auto-enabled by MCP");
+        assert.ok(body.tools.some(t => t.function.name === "pi_studio_present"), "delivery tool active in bundled runtime");
+        assert.match(JSON.stringify(body.messages.filter(m => m.role === "system" || m.role === "developer")), /only the final deliverables/, "delivery guideline reaches the model");
+        assert.equal(body.reasoning_effort, "max", "default max reaches the provider request without clamping to high");
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        const send = (delta, finish_reason = null) => res.write(`data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
+        const phase = completions++;
+        if (phase === 0) {
+          send({ role: "assistant", tool_calls: [{ index: 0, id: "code-call", type: "function", function: { name: "codemode", arguments: JSON.stringify({ code: "const r = await tools.mcp__fixture__echo({text: 'verified'}); text(r);" }) } }] });
+          send({}, "tool_calls");
+        } else if (phase === 1) {
+          send({ role: "assistant", tool_calls: [{ index: 0, id: "present-call", type: "function", function: { name: "pi_studio_present", arguments: JSON.stringify({ files: [{ path: "fixture.cjs", description: "Final fixture" }] }) } }] });
+          send({}, "tool_calls");
+        } else { send({ role: "assistant", content: "Runtime MCP verified" }); send({}, "stop"); }
+        res.write("data: [DONE]\n\n"); res.end();
+      });
+    });
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    fs.writeFileSync(path.join(agentDir, "models.json"), JSON.stringify({ providers: { fixture: { api: "openai-completions", baseUrl: `http://127.0.0.1:${server.address().port}/v1`, apiKey: "local-test", models: [{ id: "fixture", name: "fixture", reasoning: true, compat: { supportsReasoningEffort: true }, input: ["text"], contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }));
+    fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ defaultProvider: "fixture", defaultModel: "fixture" }));
+    const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_AGENT_DIR: agentDir, OPENAI_API_KEY: "local-test" };
+    const listed = execFileSync(node, [cli, "mcp", "list"], { cwd: temp, env, encoding: "utf8", timeout: 20000 });
+    assert.match(listed, /fixture/); assert.match(listed, /echo/);
+    proc = spawn(node, [cli, "--mode", "rpc", "--offline", "--no-session", "--extension", path.join(root, "src/main/permission-gate-ext.ts")], { cwd: temp, env, windowsHide: true });
+    const events = []; let buffer = "", stderr = "";
+    proc.stderr.on("data", d => stderr += d);
+    proc.stdout.on("data", d => { buffer += d; const lines = buffer.split("\n"); buffer = lines.pop(); for (const line of lines) { try { events.push(JSON.parse(line)); } catch {} } });
+    const waitFor = async predicate => {
+      const start = Date.now();
+      while (Date.now() - start < 25000) {
+        const event = events.find(predicate); if (event) return event;
+        if (proc.exitCode !== null) throw new Error(`Runtime exited ${proc.exitCode}: ${stderr}`);
+        const approval = events.find(e => e.type === "extension_ui_request" && e.method === "select" && !e.answered);
+        if (approval) { approval.answered = true; proc.stdin.write(JSON.stringify({ type: "extension_ui_response", id: approval.id, value: approval.options[0] }) + "\n"); }
+        await new Promise(resolve => setTimeout(resolve, 30));
+      }
+      throw new Error(`RPC timeout: ${stderr}\n${JSON.stringify(events).slice(-4000)}`);
+    };
+    proc.stdin.write(JSON.stringify({ id: "models", type: "get_available_models" }) + "\n");
+    const models = await waitFor(e => e.id === "models");
+    assert.equal(models.success, true);
+    assert.ok(models.data.models.some(m => m.id === "gpt-6.1-sol"), "0.99.1 model catalog");
+    proc.stdin.write(JSON.stringify({ id: "levels", type: "get_available_thinking_levels" }) + "\n");
+    assert.ok((await waitFor(e => e.id === "levels")).data.levels.includes("max"), "unmapped reasoning model defaults to max");
+    proc.stdin.write(JSON.stringify({ id: "effort", type: "set_thinking_level", level: "max" }) + "\n");
+    assert.equal((await waitFor(e => e.id === "effort")).success, true);
+    proc.stdin.write(JSON.stringify({ id: "prompt", type: "prompt", message: "Exercise MCP through codemode" }) + "\n");
+    await waitFor(e => e.type === "agent_settled");
+    proc.stdin.write(JSON.stringify({ id: "timing-entries", type: "get_entries" }) + "\n");
+    const timingEntries = (await waitFor(e => e.id === "timing-entries")).data.entries;
+    const timing = timingEntries.find(e => e.customType === "pi-studio-reply-timing");
+    const delivery = timingEntries.find(e => e.message?.role === "toolResult" && e.message?.toolName === "pi_studio_present");
+    assert.ok(delivery && !delivery.message.isError, "delivery tool validation/execution succeeds");
+    assert.equal(delivery.message.details.files[0].path, fixture, "validated absolute delivery path persists in the session");
+    assert.ok(timing?.data.endedAt >= timing?.data.startedAt, "whole reply timing persists at settlement");
+    assert.equal(timing.data.entryIds.length, timingEntries.filter(e => e.message?.role === "assistant").length, "timing includes intermediate tool request and final response");
+    assert.ok(events.some(e => e.type === "tool_execution_end" && e.toolName === "mcp__fixture__echo" && !e.isError && e.parentToolCallId === "code-call"), "real nested MCP execution");
+    assert.ok(events.some(e => e.type === "message_end" && JSON.stringify(e).includes("mcp-echo:verified")), "MCP output reaches the transcript");
+    assert.ok(events.some(e => e.id === "prompt" && e.data?.disposition === "started"), "new RPC prompt disposition");
+    assert.ok(events.some(e => e.type === "message_end" && e.message?.nestedCalls?.calls.some(c => c.name === "mcp__fixture__echo")), "nested calls persisted in tool results");
+    console.log("Packaged runtime integrity/catalog, MCP Codemode, final delivery tool/guidelines/persistence, permissions and RPC disposition passed");
+  } finally {
+    if (proc && proc.exitCode === null) { proc.kill(); await new Promise(resolve => proc.once("exit", resolve)); }
+    if (server) await new Promise(resolve => server.close(resolve));
+    process.resourcesPath = originalResourcesPath;
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+})().catch(e => { console.error(e); process.exitCode = 1; });
