@@ -11,6 +11,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { getBundledRuntime, resetPiRuntime, runtimeKind } from "./pi-bridge";
@@ -39,12 +40,12 @@ import {
  *   2. Prefer the standalone runtime archive embedded in the app release.
  *   3. Download the npm tarball from the registry (integrity-verified) only
  *      when no matching standalone archive is available.
- *   4. The tarball does not include node_modules, but it ships
- *      npm-shrinkwrap.json (a full lockfile with `resolved` + `integrity`
- *      for every transitive dependency). We install each dependency the
+ *   4. Use npm-shrinkwrap.json when shipped; otherwise resolve a production
+ *      lockfile with an isolated, integrity-verified npm CLI and managed Node.
+ *      Lifecycle scripts are disabled. We install each dependency the
  *      way `npm install --ignore-scripts` would: download its tarball,
  *      verify integrity, extract it under node_modules/<key>, skipping
- *      entries whose os/cpu don't match this platform. No npm needed.
+ *      entries whose os/cpu don't match this platform. No system npm needed.
  *   5. Activate by switching `<userData>/runtime/current.json` to a versioned
  *      tree. The pointer takes precedence over the legacy bundled copy and
  *      avoids fighting file locks on the running app's own resources.
@@ -60,6 +61,7 @@ const DEFAULT_PACKAGE = "@earendil-works/pi-coding-agent";
 const FETCH_TIMEOUT_MS = 30_000;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 const DEP_CONCURRENCY = 8;
+const RESOLVER_NPM_VERSION = "11.6.2";
 const RENAME_RETRY_COUNT = 10;
 const RENAME_RETRY_BASE_DELAY_MS = 200;
 const RENAME_RETRY_MAX_DELAY_MS = 1_500;
@@ -110,6 +112,7 @@ interface LockEntry {
   resolved?: string;
   integrity?: string;
   optional?: boolean;
+  dev?: boolean;
   link?: boolean;
   os?: string[];
   cpu?: string[];
@@ -236,9 +239,11 @@ async function downloadFile(url: string, dest: string, onPct?: (pct: number) => 
   });
 }
 
-function runCommand(cmd: string, args: string[]): Promise<void> {
+function runCommand(cmd: string, args: string[], cwd?: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { windowsHide: true });
+    const p = spawn(cmd, args, { windowsHide: true, cwd });
+    // npm can emit enough progress to fill its stdout pipe.
+    p.stdout.resume();
     let stderr = "";
     p.stderr.on("data", (d: Buffer) => {
       stderr += d.toString("utf8");
@@ -416,6 +421,37 @@ function singleRootDir(dir: string): string {
   return join(dir, entries[0]);
 }
 
+/** New Pi releases omit shrinkwrap. Resolve without requiring system npm. */
+async function resolveRuntimeLock(root: string, staging: string, node: string, progress: ProgressFn): Promise<{ packages?: Record<string, LockEntry> }> {
+  const shippedLock = join(root, "npm-shrinkwrap.json");
+  if (existsSync(shippedLock)) return JSON.parse(readFileSync(shippedLock, "utf8"));
+
+  progress({ stage: "installing", message: "正在解析 Pi 运行依赖…" });
+  const npmManifest = await fetchJson<{ dist?: { tarball?: string; integrity?: string } }>(`${REGISTRY}/npm/${RESOLVER_NPM_VERSION}`);
+  if (!npmManifest.dist?.tarball || !npmManifest.dist.integrity) throw new Error("无法获取依赖解析器安装包");
+  const archive = join(staging, "npm.tgz");
+  await downloadFile(npmManifest.dist.tarball, archive);
+  await verifyIntegrity(archive, npmManifest.dist.integrity);
+  const npmDir = join(staging, "npm");
+  mkdirSync(npmDir, { recursive: true });
+  await runCommand(tarBinary(), ["-xzf", archive, "-C", npmDir]);
+  const npmCli = join(singleRootDir(npmDir), "bin", "npm-cli.js");
+  const resolutionDir = join(staging, "resolution");
+  mkdirSync(resolutionDir, { recursive: true });
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  // Exclude development dependencies and package scripts from resolution.
+  const productionPackage = Object.fromEntries(
+    ["name", "version", "dependencies", "optionalDependencies", "peerDependencies", "peerDependenciesMeta", "overrides", "engines"]
+      .filter(key => pkg[key] !== undefined).map(key => [key, pkg[key]]),
+  );
+  writeFileSync(join(resolutionDir, "package.json"), JSON.stringify(productionPackage));
+  await runCommand(node, [npmCli, "install", "--package-lock-only", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund",
+    `--registry=${REGISTRY}`, `--cache=${join(staging, "npm-cache")}`, "--userconfig=" + join(staging, "empty.npmrc")], resolutionDir);
+  const lock = JSON.parse(readFileSync(join(resolutionDir, "package-lock.json"), "utf8"));
+  if (!lock.packages?.[""]) throw new Error("依赖解析未生成有效锁文件");
+  return lock;
+}
+
 /* ------------------------------ public API ------------------------------ */
 
 /** Check pi.dev for the latest release and compare with the managed runtime. */
@@ -498,11 +534,9 @@ export async function installCoreUpdate(onProgress?: ProgressFn): Promise<CoreUp
     if (!existsSync(join(root, "dist", "cli.js"))) throw new Error("安装包内容异常：缺少 dist/cli.js");
 
     // ---- engine check ----------------------------------------------------
-    const lockPath = join(root, "npm-shrinkwrap.json");
-    if (!existsSync(lockPath)) throw new Error("安装包缺少 npm-shrinkwrap.json，无法安装依赖");
-    const lock = JSON.parse(readFileSync(lockPath, "utf8")) as { packages?: Record<string, LockEntry> };
-    const packages = lock.packages || {};
-    const requiredNode = packages[""]?.engines?.node;
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    if (pkg.version !== targetVersion) throw new Error("安装包版本与目标版本不匹配");
+    const requiredNode = pkg.engines?.node;
     const bundled = runtimeNode ? { node: runtimeNode } : null;
     if (!runtimeNode) throw new Error("No managed Node runtime is available to install the Pi update");
     if (!bundled) throw new Error("未找到内置 Node 运行时，无法安装更新");
@@ -514,9 +548,12 @@ export async function installCoreUpdate(onProgress?: ProgressFn): Promise<CoreUp
       }
     }
 
+    const lock = await resolveRuntimeLock(root, staging, runtimeNode, progress);
+    const packages = lock.packages || {};
+
     // ---- install dependencies from the lockfile ---------------------------
     const deps = Object.entries(packages)
-      .filter(([key, e]) => key !== "" && !e.link && !!e.resolved)
+      .filter(([key, e]) => key !== "" && !e.dev && !e.link && !!e.resolved)
       .filter(([, e]) => platformMatches(e));
 
     let done = 0;
@@ -550,6 +587,8 @@ export async function installCoreUpdate(onProgress?: ProgressFn): Promise<CoreUp
     // ---- prune ------------------------------------------------------------
     progress({ stage: "pruning", message: "正在精简运行时文件…" });
     pruneTree(root);
+    // Catch missing/incompatible dependencies before changing the active pointer.
+    await runCommand(runtimeNode, [join(root, "dist", "cli.js"), "--version"]);
 
     // ---- activate ---------------------------------------------------------
     progress({ stage: "activating", message: "正在激活新版本…" });

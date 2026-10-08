@@ -126,7 +126,11 @@ const api = {
     getUsage: (range: { from: number; to: number }) => ipcRenderer.invoke("settings:getUsage", range) as Promise<import("../main/usage-service").UsageReport>,
     getMcp: () => ipcRenderer.invoke("settings:getMcp") as Promise<{ path: string; config: import("../main/mcp-service").McpConfig }>,
     saveMcp: (config: unknown) => ipcRenderer.invoke("settings:saveMcp", config),
-    mcpAction: (action: "list" | "login" | "logout", name?: string) => ipcRenderer.invoke("settings:mcpAction", { action, name }) as Promise<{ code: number | null; stdout: string; stderr: string }>,
+    getCodemode: () => ipcRenderer.invoke("settings:getCodemode") as Promise<import("../main/mcp-service").CodemodeSettings>,
+    saveCodemode: (settings: import("../main/mcp-service").CodemodeSettings) => ipcRenderer.invoke("settings:saveCodemode", settings) as Promise<import("../main/mcp-service").CodemodeSettings>,
+    mcpAction: (action: "list" | "login" | "logout", name?: string, requestId = crypto.randomUUID()) => ipcRenderer.invoke("settings:mcpAction", { action, name, requestId }) as Promise<{ code: number | null; stdout: string; stderr: string; cancelled?: boolean; timedOut?: boolean }>,
+    cancelMcpAction: (requestId: string) => ipcRenderer.invoke("settings:cancelMcpAction", requestId),
+    onMcpOutput: (cb: (payload: { requestId: string; text: string }) => void) => on("settings:mcpOutput", cb),
     getModels: () => ipcRenderer.invoke("settings:getModels"),
     discoverModels: (provider: Record<string, unknown>) => ipcRenderer.invoke("settings:discoverModels", provider),
     testModel: (args: { providerId: string; provider: Record<string, unknown>; modelId: string }) =>

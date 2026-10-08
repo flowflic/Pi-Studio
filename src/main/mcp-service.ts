@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { getAgentDir } from "./session-store";
 
 export type McpConfig = { mcpServers: Record<string, Record<string, unknown>>; autoEnableCodemode?: boolean; [key: string]: unknown };
+export type CodemodeSettings = { mode: "on" | "only" };
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 export function validateMcpConfig(value: unknown): asserts value is McpConfig {
   if (!object(value) || !object(value.mcpServers)) throw new Error("Expected an object with mcpServers");
@@ -36,4 +37,30 @@ export function writeMcpConfig(config: unknown, path = join(getAgentDir(), "mcp.
   writeFileSync(temporary, JSON.stringify(config, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
   renameSync(temporary, path);
   return { path, config };
+}
+
+export function readCodemodeSettings(path = join(getAgentDir(), "settings.json")): CodemodeSettings {
+  const settings = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+  return { mode: settings.codemode?.mode === "only" ? "only" : "on" };
+}
+
+/** Merge the native Pi setting without replacing model, package or tool choices. */
+export function writeCodemodeSettings(value: CodemodeSettings, path = join(getAgentDir(), "settings.json")): CodemodeSettings {
+  if (!object(value) || !["on", "only"].includes(String(value.mode))) throw new Error("Invalid Codemode mode");
+  const settings = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+  if (!object(settings)) throw new Error("Invalid Pi settings");
+  if (settings.codemode !== undefined && !object(settings.codemode)) throw new Error("Invalid Codemode settings");
+  settings.codemode = { ...(settings.codemode || {}), mode: value.mode };
+  if (value.mode === "only") {
+    if (settings.defaultTools !== undefined && (!Array.isArray(settings.defaultTools) || !settings.defaultTools.every(t => typeof t === "string"))) throw new Error("Invalid defaultTools");
+    const tools = ((settings.defaultTools || []) as string[]).filter(t => t !== "-codemode");
+    // Preserve explicit selections; a modifier-only list inherits Pi defaults.
+    if (!tools.includes("codemode") && !tools.includes("+codemode")) tools.push(Array.isArray(settings.defaultTools) && settings.defaultTools.length === 0 ? "codemode" : "+codemode");
+    settings.defaultTools = tools;
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.pi-studio-${process.pid}.tmp`;
+  writeFileSync(temporary, JSON.stringify(settings, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  renameSync(temporary, path);
+  return readCodemodeSettings(path);
 }

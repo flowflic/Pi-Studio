@@ -119,7 +119,7 @@ export function removePackageEntry(source: string): void {
 }
 
 /** Run a pi CLI command (install/remove/update/list) and capture its output. */
-export function runPiCli(args: string[], onLine?: (line: string) => void, timeoutMs = 0): Promise<{ code: number | null; stdout: string; stderr: string }> {
+export function runPiCli(args: string[], onLine?: (line: string) => void, timeoutMs = 0, options: { signal?: AbortSignal; onOutput?: (chunk: string) => void } = {}): Promise<{ code: number | null; stdout: string; stderr: string; cancelled?: boolean; timedOut?: boolean }> {
   return new Promise(async (resolve, reject) => {
     let rt: { node: string; cli: string };
     try {
@@ -128,22 +128,30 @@ export function runPiCli(args: string[], onLine?: (line: string) => void, timeou
       reject(e);
       return;
     }
+    if (options.signal?.aborted) { resolve({ code: null, stdout: "", stderr: "", cancelled: true }); return; }
     const proc = spawn(rt.node, [rt.cli, ...args], { cwd: getAgentDir(), env: { ...process.env, PI_CODING_AGENT_DIR: getAgentDir() }, windowsHide: true });
+    proc.stdout.setEncoding("utf8");
+    proc.stderr.setEncoding("utf8");
     let stdout = "";
     let stderr = "";
-    const timer = timeoutMs ? setTimeout(() => { stderr += "\nCommand timed out."; proc.kill(); }, timeoutMs) : undefined;
-    proc.stdout.on("data", (d: Buffer) => {
-      const s = d.toString("utf8");
+    let cancelled = false;
+    let timedOut = false;
+    const abort = () => { cancelled = true; proc.kill(); };
+    options.signal?.addEventListener("abort", abort, { once: true });
+    const timer = timeoutMs ? setTimeout(() => { timedOut = true; stderr += "\nCommand timed out."; proc.kill(); }, timeoutMs) : undefined;
+    const cleanup = () => { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); };
+    proc.stdout.on("data", (s: string) => {
       stdout += s;
+      options.onOutput?.(s);
       s.split(/\r?\n/).forEach((l) => l.trim() && onLine?.(l));
     });
-    proc.stderr.on("data", (d: Buffer) => {
-      const s = d.toString("utf8");
+    proc.stderr.on("data", (s: string) => {
       stderr += s;
+      options.onOutput?.(s);
       s.split(/\r?\n/).forEach((l) => l.trim() && onLine?.(l));
     });
-    proc.on("error", error => { clearTimeout(timer); reject(error); });
-    proc.on("exit", (code) => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+    proc.on("error", error => { cleanup(); reject(error); });
+    proc.on("close", (code) => { cleanup(); resolve({ code, stdout, stderr, cancelled, timedOut }); });
   });
 }
 

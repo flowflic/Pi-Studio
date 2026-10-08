@@ -10,7 +10,7 @@ const originalResourcesPath = process.resourcesPath;
 (async () => {
   try {
     const manifest = JSON.parse(fs.readFileSync(path.join(root, "resources/runtime-manifest.json")));
-    assert.equal(manifest.runtimeVersion, "0.99.1");
+    assert.equal(manifest.runtimeVersion, "1.1.0");
     const archive = path.join(root, "runtime-release", manifest.fileName);
     assert.equal(fs.statSync(archive).size, manifest.size);
     assert.equal(require("node:crypto").createHash("sha512").update(fs.readFileSync(archive)).digest("base64"), manifest.sha512);
@@ -30,26 +30,44 @@ const originalResourcesPath = process.resourcesPath;
     const runtimeApi = {};
     new Function("require", "exports", source)(name => name === "electron" ? { app: { isPackaged: true } } : name === "./config" ? { getConfigDir: () => configDir } : require(name), runtimeApi);
     const runtime = await runtimeApi.ensureRuntimePackage();
-    assert.equal(JSON.parse(fs.readFileSync(path.join(configDir, "runtime", "current.json"))).version, "0.99.1", "embedded runtime promotes older installs");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(configDir, "runtime", "current.json"))).version, "1.1.0", "embedded runtime promotes older installs");
     assert.equal(await runtimeApi.ensureRuntimePackage(), runtime, "current runtime is reused");
     const node = path.join(runtime, "node", process.platform === "win32" ? "node.exe" : "node");
     const cli = path.join(runtime, "pi", "dist", "cli.js");
-    assert.equal(execFileSync(node, [cli, "--version"], { encoding: "utf8" }).trim(), "0.99.1");
+    assert.equal(execFileSync(node, [cli, "--version"], { encoding: "utf8" }).trim(), "1.1.0");
     const agentDir = path.join(temp, "agent"); fs.mkdirSync(agentDir);
     const fixture = path.join(temp, "fixture.cjs");
     fs.writeFileSync(fixture, `const readline=require('node:readline'); const rl=readline.createInterface({input:process.stdin}); rl.on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;let result={};if(m.method==='initialize')result={protocolVersion:'2025-03-26',capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1.0'}};if(m.method==='tools/list')result={tools:[{name:'echo',description:'Echo text',inputSchema:{type:'object',properties:{text:{type:'string'}},required:['text']},annotations:{readOnlyHint:true}}]};if(m.method==='tools/call')result={content:[{type:'text',text:'mcp-echo:'+m.params.arguments.text}]};process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`);
     fs.writeFileSync(path.join(agentDir, "mcp.json"), JSON.stringify({ mcpServers: { fixture: { command: node, args: [fixture], exposure: "codemode" } } }));
+    const connectionGate = path.join(temp, "connect-allowed");
+    let fixtureSource = fs.readFileSync(fixture, "utf8");
+    fixtureSource = fixtureSource.replace("rl.on('line',line=>", "rl.on('line',async line=>").replace("if(m.method==='initialize')result=", `if(m.method==='initialize') { while(!require('node:fs').existsSync(${JSON.stringify(connectionGate)})) await new Promise(r=>setTimeout(r,20)); } if(m.method==='initialize')result=`);
+    fs.writeFileSync(fixture, fixtureSource);
+    fs.writeFileSync(connectionGate, "ready");
     let completions = 0;
+    let compactOnly = false, compactRequests = 0, standardToolCount = 0;
     server = http.createServer((req, res) => {
       let data = ""; req.on("data", d => data += d); req.on("end", () => {
         const body = JSON.parse(data); assert.ok(body.tools.some(t => t.function.name === "codemode"), "codemode auto-enabled by MCP");
-        assert.ok(body.tools.some(t => t.function.name === "pi_studio_present"), "delivery tool active in bundled runtime");
-        assert.match(JSON.stringify(body.messages.filter(m => m.role === "system" || m.role === "developer")), /only the final deliverables/, "delivery guideline reaches the model");
+        if (!compactOnly) {
+          assert.ok(body.tools.some(t => t.function.name === "pi_studio_present"), "delivery tool active in bundled runtime");
+          standardToolCount = body.tools.length;
+          if (completions === 0) {
+            assert.ok(!fs.existsSync(connectionGate), "first model request starts before MCP initialization completes");
+            fs.writeFileSync(connectionGate, "ready");
+          }
+        } else {
+          compactRequests++;
+          assert.ok(body.tools.length < standardToolCount, "compact mode sends fewer tool schemas");
+          assert.ok(!body.tools.some(t => ["read", "write", "bash", "pi_studio_present"].includes(t.function.name)), "tools routed through Codemode");
+        }
+        assert.match(JSON.stringify(compactOnly ? body : body.messages.filter(m => m.role === "system" || m.role === "developer")), /only the final deliverables/, "delivery guideline reaches the model, including through Codemode declarations");
         assert.equal(body.reasoning_effort, "max", "default max reaches the provider request without clamping to high");
         res.writeHead(200, { "Content-Type": "text/event-stream" });
         const send = (delta, finish_reason = null) => res.write(`data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
         const phase = completions++;
-        if (phase === 0) {
+        if (compactOnly) { send({ role: "assistant", content: "Compact verified" }); send({}, "stop"); }
+        else if (phase === 0) {
           send({ role: "assistant", tool_calls: [{ index: 0, id: "code-call", type: "function", function: { name: "codemode", arguments: JSON.stringify({ code: "const r = await tools.mcp__fixture__echo({text: 'verified'}); text(r);" }) } }] });
           send({}, "tool_calls");
         } else if (phase === 1) {
@@ -65,6 +83,7 @@ const originalResourcesPath = process.resourcesPath;
     const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_AGENT_DIR: agentDir, OPENAI_API_KEY: "local-test" };
     const listed = execFileSync(node, [cli, "mcp", "list"], { cwd: temp, env, encoding: "utf8", timeout: 20000 });
     assert.match(listed, /fixture/); assert.match(listed, /echo/);
+    fs.unlinkSync(connectionGate);
     proc = spawn(node, [cli, "--mode", "rpc", "--offline", "--no-session", "--extension", path.join(root, "src/main/permission-gate-ext.ts")], { cwd: temp, env, windowsHide: true });
     const events = []; let buffer = "", stderr = "";
     proc.stderr.on("data", d => stderr += d);
@@ -83,7 +102,7 @@ const originalResourcesPath = process.resourcesPath;
     proc.stdin.write(JSON.stringify({ id: "models", type: "get_available_models" }) + "\n");
     const models = await waitFor(e => e.id === "models");
     assert.equal(models.success, true);
-    assert.ok(models.data.models.some(m => m.id === "gpt-6.1-sol"), "0.99.1 model catalog");
+    assert.ok(models.data.models.some(m => m.id === "gpt-6.1-sol"), "1.1.0 model catalog");
     proc.stdin.write(JSON.stringify({ id: "levels", type: "get_available_thinking_levels" }) + "\n");
     assert.ok((await waitFor(e => e.id === "levels")).data.levels.includes("max"), "unmapped reasoning model defaults to max");
     proc.stdin.write(JSON.stringify({ id: "effort", type: "set_thinking_level", level: "max" }) + "\n");
@@ -102,7 +121,24 @@ const originalResourcesPath = process.resourcesPath;
     assert.ok(events.some(e => e.type === "message_end" && JSON.stringify(e).includes("mcp-echo:verified")), "MCP output reaches the transcript");
     assert.ok(events.some(e => e.id === "prompt" && e.data?.disposition === "started"), "new RPC prompt disposition");
     assert.ok(events.some(e => e.type === "message_end" && e.message?.nestedCalls?.calls.some(c => c.name === "mcp__fixture__echo")), "nested calls persisted in tool results");
-    console.log("Packaged runtime integrity/catalog, MCP Codemode, final delivery tool/guidelines/persistence, permissions and RPC disposition passed");
+    proc.kill(); await new Promise(resolve => proc.once("exit", resolve));
+    compactOnly = true;
+    const settingsPath = path.join(agentDir, "settings.json");
+    const settings = JSON.parse(fs.readFileSync(settingsPath));
+    fs.writeFileSync(settingsPath, JSON.stringify({ ...settings, defaultThinkingLevel: "max", codemode: { mode: "only" }, defaultTools: ["+codemode"] }));
+    proc = spawn(node, [cli, "--mode", "rpc", "--offline", "--no-session", "--extension", path.join(root, "src/main/permission-gate-ext.ts")], { cwd: temp, env, windowsHide: true });
+    let compactOutput = "";
+    proc.stdout.on("data", data => { compactOutput += data; });
+    proc.stderr.on("data", data => { stderr += data; });
+    proc.stdin.write(JSON.stringify({ id: "compact-effort", type: "set_thinking_level", level: "max" }) + "\n");
+    proc.stdin.write(JSON.stringify({ id: "compact", type: "prompt", message: "Verify compact mode" }) + "\n");
+    const compactStart = Date.now();
+    while (!compactOutput.includes('"type":"agent_settled"')) {
+      if (Date.now() - compactStart > 25000 || proc.exitCode !== null) throw new Error(`Compact mode failed: ${stderr}\n${compactOutput}`);
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+    assert.equal(compactRequests, 1);
+    console.log("Background MCP first prompt, compact tool schemas, packaged runtime, MCP, permissions and deliveries passed");
   } finally {
     if (proc && proc.exitCode === null) { proc.kill(); await new Promise(resolve => proc.once("exit", resolve)); }
     if (server) await new Promise(resolve => server.close(resolve));

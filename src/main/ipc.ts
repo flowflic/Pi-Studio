@@ -3,7 +3,7 @@ import { replyTimings } from "./reply-timing";
 import { getUsageReport } from "./usage-service";
 import { readPricingConfig, writePricingConfig, pricingCatalog, PRICING_SNAPSHOT } from "./usage-pricing";
 import { getPlanQuotas } from "./plan-quotas";
-import { readMcpConfig, writeMcpConfig } from "./mcp-service";
+import { readCodemodeSettings, writeCodemodeSettings, readMcpConfig, writeMcpConfig } from "./mcp-service";
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -1661,15 +1661,42 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   ipcMain.handle("settings:saveUsagePricing", (_e, config: unknown) => writePricingConfig(config));
   ipcMain.handle("settings:getPlanQuotas", (_e, force?: boolean) => getPlanQuotas(force === true));
   ipcMain.handle("settings:getMcp", () => readMcpConfig());
+  ipcMain.handle("settings:getCodemode", () => readCodemodeSettings());
+  ipcMain.handle("settings:saveCodemode", (_e, value) => {
+    const result = writeCodemodeSettings(value);
+    dropWarmBridge();
+    return result;
+  });
   ipcMain.handle("settings:saveMcp", (_e, config: unknown) => {
     const result = writeMcpConfig(config);
     dropWarmBridge();
     return result;
   });
-  ipcMain.handle("settings:mcpAction", async (_e, args: { action: string; name?: string }) => {
+  const mcpActions = new Map<string, AbortController>();
+  ipcMain.handle("settings:cancelMcpAction", (event, requestId: string) => {
+    mcpActions.get(`${event.sender.id}:${requestId}`)?.abort();
+  });
+  ipcMain.handle("settings:mcpAction", async (event, args: { action: string; name?: string; requestId: string }) => {
     if (!["list", "login", "logout"].includes(args?.action)) throw new Error("Invalid MCP action");
     if (args.action !== "list" && (!args.name || !/^[a-zA-Z0-9_-]+$/.test(args.name))) throw new Error("Invalid MCP server name");
-    return runPiCli(["mcp", args.action, ...(args.action === "list" ? [] : [args.name!])], undefined, args.action === "login" ? 300_000 : 90_000);
+    if (typeof args.requestId !== "string" || !/^[\w-]{1,100}$/.test(args.requestId)) throw new Error("Invalid MCP request ID");
+    const key = `${event.sender.id}:${args.requestId}`;
+    if (mcpActions.has(key)) throw new Error("MCP action already running");
+    const controller = new AbortController();
+    mcpActions.set(key, controller);
+    const destroyed = () => controller.abort();
+    event.sender.once("destroyed", destroyed);
+    try {
+      const result = await runPiCli(["mcp", args.action, ...(args.action === "list" ? [] : [args.name!]), ...(args.action === "login" ? ["--timeout", "300"] : [])], undefined,
+        args.action === "login" ? 305_000 : 90_000, { signal: controller.signal, onOutput: text => {
+          if (!event.sender.isDestroyed()) event.sender.send("settings:mcpOutput", { requestId: args.requestId, text });
+        } });
+      if (result.code === 0 && args.action !== "list") dropWarmBridge();
+      return result;
+    } finally {
+      event.sender.removeListener("destroyed", destroyed);
+      mcpActions.delete(key);
+    }
   });
 
   ipcMain.handle("app:openProject", async (_e, absPath: string) => {

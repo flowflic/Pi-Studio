@@ -33,7 +33,7 @@ jobs:
     # These are unsigned CI artifacts. Configure signing secrets and remove
     # this setting for production distribution builds.
     env:
-      PI_RUNTIME_VERSION: 0.99.1
+      PI_RUNTIME_VERSION: 1.1.0
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
     steps:
@@ -64,6 +64,12 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Verify Pi core updater
+        run: npm run test:core-updater
+
+      - name: Verify desktop MCP and Codemode settings
+        run: npm run test:mcp-desktop
 
       - name: Run Windows permission gate
         if: matrix.platform == 'win32'
