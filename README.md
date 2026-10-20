@@ -37,7 +37,9 @@ The current interface brings the main workspace, plugin manager, public Skills H
 
 ## Recent additions
 
+- **Quick setup for built-in providers** — A panel at the top of Settings → Models & providers covers OpenCode Go and Zen, Z.ai GLM Coding Plan (China and global), Qwen Token Plan (China, global, individual), MiniMax Token Plan (China and global), DeepSeek, Kimi For Coding, Moonshot / Kimi API (China and global) and Xiaomi MiMo Token Plan. Pick a provider, paste an API key, optionally test the connection, and save: Pi supplies the endpoint, protocol and model catalog. The key is stored in `models.json` under that provider's `apiKey` without overriding Pi's endpoint or built-in models, and `auth.json` is never touched. The panel reports whether a stored `auth.json` credential takes precedence over the key.
 - **Consistent model lists** — For providers with an explicit model list, the thread picker shows only the saved, available models instead of merging in the provider's built-in catalog. Saving settings refreshes open threads.
+- **MCP marketplace (Glama)** — A marketplace panel in Settings → MCP reads the [Glama MCP directory](https://glama.ai/mcp/servers). Search by keyword, filter by category, language or hosting, and install: the panel lifts the install example from the server's page into an editable command, arguments and environment variables, previews the generated `mcp.json` entry, and requires explicit confirmation before replacing an existing name. Installs write to Pi's shared `mcp.json`; run `/reload` to load the tools. The panel credits Glama and links every record back to its listing. A sidebar shortcut under Plugins opens this page directly.
 - **Office previews** — Local, read-only Univer spreadsheets with sheet tabs, a formula bar, zoom, common XLSX styles, merged cells, row/column dimensions and frozen panes. DOCX previews retain pages, headers, footers and tables with fit-to-width zoom. No conversion server or document upload is needed. Charts, drawings, pivots and conditional formatting are not fully imported; large workbooks have explicit preview limits. PPTX retains its existing basic preview.
 - **Plugin manager** — Search, install, update, enable, disable, and remove Pi extension packages from npm, GitHub, or local paths. The same panel also lists skills discovered in Pi's shared and project directories.
 - **Skills Hub** — Browse and search the public [skills.sh](https://skills.sh/) directory, inspect a skill's details and install command, and install it directly into Pi.
@@ -50,6 +52,7 @@ The current interface brings the main workspace, plugin manager, public Skills H
 - Chat with streaming responses and configurable model and thinking levels.
 - Read and preview Markdown, HTML, source code, images, and common office documents.
 - Configure providers and models through Pi's shared `models.json` configuration.
+- Enable built-in providers (OpenCode Go/Zen, Z.ai, MiniMax, Qwen, DeepSeek, Kimi, Moonshot, Xiaomi MiMo) by pasting an API key into the quick setup panel.
 - Use Pi extensions and plugins from the shared Pi agent directory.
 - Browse and install public skills through the integrated Skills Hub.
 - Pair with the Android companion for remote thread viewing and approved controls.
@@ -98,7 +101,9 @@ Settings → Token usage offers a green heatmap with daily, weekly and cumulativ
 
 Settings → MCP manages global `mcpServers` JSON: add/edit, enable/disable, remove, check connections and tools, and OAuth sign-in/sign-out. stdio and Streamable HTTP use Pi's built-in MCP support, including Codemode and tool search. Run `/reload` in chat or reopen it after saving. Nested tool calls, extension statuses and text widgets are displayed in chat.
 
-Run `npm run test:usage-mcp` and `npm run test:settings-ui` for feature checks. After `npm run bundle`, `npm run test:runtime-mcp` checks the packaged upgrade and actual nested MCP execution using isolated settings and local model/MCP fixtures without user credentials.
+The same page embeds the Glama MCP marketplace. Search and filters query `glama.ai/mcp/servers`; installing a result reads the public server page, extracts the install example, and opens a review panel where the command, arguments, environment variables and generated `mcp.json` entry can be edited before writing. Existing names are never overwritten without confirmation. Glama's documented API requires a per-user key, so Pi Studio reads the public directory pages instead and keeps the attribution and per-record links the directory requires.
+
+Run `npm run test:usage-mcp` and `npm run test:settings-ui` for feature checks. After `npm run bundle`, `npm run test:runtime-mcp` checks the packaged upgrade and actual nested MCP execution using isolated settings and local model/MCP fixtures without user credentials. `npm run test:mcp-marketplace` and `npm run test:mcp-marketplace-ui` cover the marketplace parsers, install path and UI.
 
 ## Configuration and data
 

@@ -1131,7 +1131,9 @@ interface PiStore {
 
   // settings overlay
   settingsOpen: boolean;
-  openSettings: () => void;
+  /** Tab to reveal on the next open (e.g. "mcp" from the sidebar shortcut). */
+  settingsTab: string | null;
+  openSettings: (tab?: string) => void;
   closeSettings: () => void;
 
   // search overlay
@@ -1306,6 +1308,7 @@ export const useStore = create<PiStore>()((set, get) => ({
   toasts: [],
   extuiQueue: [],
   settingsOpen: false,
+  settingsTab: null,
 
   bootstrap: async () => {
     // These calls are deliberately independent. Project discovery can be slow
@@ -2202,8 +2205,8 @@ export const useStore = create<PiStore>()((set, get) => ({
     get().pushToast("error", message);
   },
 
-  openSettings: () => set({ settingsOpen: true }),
-  closeSettings: () => set({ settingsOpen: false }),
+  openSettings: (tab?: string) => set({ settingsOpen: true, settingsTab: tab || null }),
+  closeSettings: () => set({ settingsOpen: false, settingsTab: null }),
 
   searchOpen: false,
   openSearch: () => set({ searchOpen: true }),

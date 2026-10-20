@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { app, BrowserWindow, Menu, shell, Tray } from "electron";
 import { loadConfig, getConfig, updateConfig } from "./config";
 import { cleanupOldRuntimes } from "./core-updater";
@@ -18,7 +18,16 @@ app.setName(IS_DEV_BUILD ? "Pi Studio Dev" : "Pi Studio");
 // otherwise share Electron's default userData lock, so the dev process can
 // silently hand its launch to the already-running packaged app and show old
 // window/tray behavior instead of the source currently being edited.
-if (IS_DEV_BUILD) app.setPath("userData", join(app.getPath("appData"), "Pi Studio Dev"));
+//
+// PI_STUDIO_USER_DATA relocates that profile for portable and sandboxed runs
+// where the host only allows writes inside the project (Electron fails to
+// create its single-instance lock otherwise). Absolute paths only.
+const userDataOverride = process.env.PI_STUDIO_USER_DATA?.trim() || "";
+if (userDataOverride && isAbsolute(userDataOverride)) {
+  app.setPath("userData", userDataOverride);
+} else if (IS_DEV_BUILD) {
+  app.setPath("userData", join(app.getPath("appData"), "Pi Studio Dev"));
+}
 if (process.platform === "win32") app.setAppUserModelId(APP_USER_MODEL_ID);
 
 registerHtmlPreviewScheme();

@@ -20,6 +20,7 @@ resources/runtime-manifest.json
 # Local app, QA, and agent data
 .claude/
 .codex-remote-attachments/
+.dev-sandbox/
 .qa-appdata/
 .qa-browser-data/
 .qa-user-data/

@@ -5,7 +5,7 @@ import { fileIcon } from "../lib/format";
 import { formatTokens } from "../lib/token-format";
 import { useOutsideClose } from "../lib/useOutsideClose";
 import type { FileNode } from "../lib/types";
-import { Plus, Folder, Archive, Trash, Star, ChevronRight, Edit, Clock, At, Search, Settings, Help, Refresh, Gauge, Smartphone, Sidebar as SidebarIcon } from "./icons";
+import { Plus, Folder, Archive, Trash, Star, ChevronRight, Edit, Clock, At, AppStore, Search, Settings, Help, Refresh, Gauge, Smartphone, Sidebar as SidebarIcon } from "./icons";
 
 const treeKey = (cwd: string, rel?: string) => `${cwd}::${rel || ""}`;
 const SIDEBAR_WIDTH_KEY = "pi-studio.sidebar-width";
@@ -54,6 +54,26 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
   const projectMenuRef = useRef<HTMLDivElement>(null);
   const threadMenuRef = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<{ startX: number; startWidth: number; width: number } | null>(null);
+  // Point the warm pi pool at a project as soon as the user shows intent, so
+  // the first new thread does not pay the full cold boot.
+  const prewarmTimer = useRef<number | null>(null);
+  const lastPrewarm = useRef<{ cwd: string; at: number } | null>(null);
+  const prewarmFor = (cwd: string) => {
+    const now = Date.now();
+    const last = lastPrewarm.current;
+    if (last && last.cwd === cwd && now - last.at < 5000) return;
+    lastPrewarm.current = { cwd, at: now };
+    window.pi.app.prewarm(cwd).catch(() => {});
+  };
+  const schedulePrewarm = (cwd: string) => {
+    if (prewarmTimer.current) window.clearTimeout(prewarmTimer.current);
+    prewarmTimer.current = window.setTimeout(() => prewarmFor(cwd), 250);
+  };
+  const cancelPrewarm = () => {
+    if (prewarmTimer.current) window.clearTimeout(prewarmTimer.current);
+    prewarmTimer.current = null;
+  };
+  useEffect(() => () => cancelPrewarm(), []);
   useOutsideClose(usageRef, usageOpen, () => setUsageOpen(false));
   useOutsideClose(projectMenuRef, !!projectMenu, () => setProjectMenu(null));
   useOutsideClose(threadMenuRef, !!threadMenu, () => setThreadMenu(null));
@@ -225,19 +245,25 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
             <span className="ico">
               <Edit size={15} />
             </span>
-            新建任务
+            {language === "zh" ? "新建任务" : "New task"}
           </button>
           <button className="sb-nav-item" onClick={() => useStore.getState().openAutomation()}>
             <span className="ico">
               <Clock size={15} />
             </span>
-            自动化
+            {language === "zh" ? "自动化" : "Automations"}
           </button>
           <button className="sb-nav-item" onClick={() => useStore.getState().openPlugins()}>
             <span className="ico">
               <At size={15} />
             </span>
-            插件
+            {language === "zh" ? "插件" : "Plugins"}
+          </button>
+          <button className="sb-nav-item" onClick={() => useStore.getState().openSettings("mcp")} title={language === "zh" ? "浏览并安装 MCP 服务器" : "Browse and install MCP servers"}>
+            <span className="ico">
+              <AppStore size={15} />
+            </span>
+            {language === "zh" ? "MCP 市场" : "MCP marketplace"}
           </button>
         </div>
 
@@ -265,7 +291,12 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
                 <div className="project" key={p.cwd}>
                   <div
                     className={`project-head ${open ? "open" : ""}`}
-                    onClick={() => toggleProject(p.cwd)}
+                    onMouseEnter={() => schedulePrewarm(p.cwd)}
+                    onMouseLeave={cancelPrewarm}
+                    onClick={() => {
+                      prewarmFor(p.cwd);
+                      toggleProject(p.cwd);
+                    }}
                     onContextMenu={(event) => {
                       event.preventDefault();
                       event.stopPropagation();

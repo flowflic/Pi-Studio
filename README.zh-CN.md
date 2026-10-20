@@ -37,9 +37,11 @@ Pi Studio 是一个独立的 Electron 桌面客户端，用于运行 [Pi coding 
 
 ## 新增功能
 
+- **常用供应商快捷配置** —— 设置 → 模型与提供商顶部新增快捷面板，内置 OpenCode Go / Zen、智谱 GLM Coding Plan（中国站 / 国际站）、通义千问 Token 套餐（中国站 / 国际站 / 个人版）、MiniMax Token Plan（中国站 / 国际站）、DeepSeek、Kimi For Coding、Moonshot / Kimi API（中国站 / 国际站）和小米 MiMo Token 套餐。选择供应商后只需粘贴 API Key，API 地址、协议和模型列表都由 Pi 内置目录提供；可先“测试连接”再保存，保存后模型立即出现在模型选择器中。密钥写入 `models.json` 中同名供应商的 `apiKey` 字段，不覆盖 Pi 的端点与内置模型列表，也不会改动 `auth.json`；面板会提示 `auth.json` 中的登录凭据是否优先于该密钥。
 - **模型列表一致性** —— 对已明确配置模型列表的供应商，线程模型选择器只显示设置中保存的可用模型，避免混入同名供应商的内置模型；保存后同步刷新已打开线程。
 - **Office 文件预览** —— 本地只读的 Univer 表格视图，支持工作表切换、公式栏、缩放，以及常见 XLSX 样式、合并单元格、行高列宽和冻结行列；DOCX 使用分页视图，保留页眉、页脚与表格，支持适应宽度。无需转换服务器，不上传文件。图表、图片、透视表和条件格式尚未完整导入，大文件会明确提示预览范围限制；PPTX 保留现有基础预览。
 - **Token 用量热力图** —— 在设置中按今天、近 7 天、近 30 天、近一年或自定义日期查看用量，支持每日、每周、累计视图；绿色色阶跟随界面主题。包含输入、输出、缓存、模型用量与估算费用，并对分支复制记录去重。
+- **MCP 市场（Glama）** —— 设置 → MCP 中新增市场面板，数据来自 [Glama MCP 目录](https://glama.ai/mcp/servers)。支持关键词搜索、按分类/语言/托管方式筛选，并读取服务器页面上的安装示例填入启动命令、参数和环境变量；安装前可编辑、查看生成的 `mcp.json` 条目，重名需显式确认覆盖。安装直接写入 Pi 共享的 `mcp.json`，成功后运行 `/reload` 即可加载工具。面板遵守 Glama 的数据署名要求，显示来源链接，并为每条记录提供回链。左侧栏“插件”下方新增“MCP 市场”快捷入口，点击直接打开该页。
 - **Pi Agent 0.99.1 与 MCP** —— 内置官方 MCP、Codemode 和工具搜索。在设置 → MCP 中添加或编辑 `mcpServers` JSON、启停或移除服务器、检查连接与工具，以及执行 OAuth 登录/退出。支持 stdio 与 Streamable HTTP；保存后在聊天中执行 `/reload` 或重新打开聊天。聊天支持嵌套工具调用记录、扩展状态与文本组件。
 - **插件管理** —— 支持搜索、安装、更新、启用、停用和删除来自 npm、GitHub 或本地路径的 Pi extension 包；同一面板也会列出 Pi 共享目录和当前项目中发现的 skill。
 - **Skills Hub** —— 浏览和搜索公开的 [skills.sh](https://skills.sh/) 目录，查看 skill 详情与安装命令，并直接安装到 Pi。
@@ -52,6 +54,7 @@ Pi Studio 是一个独立的 Electron 桌面客户端，用于运行 [Pi coding 
 - 使用流式响应聊天，并配置模型与思考级别。
 - 阅读和预览 Markdown、HTML、源代码、图片及常见办公文档。
 - 通过 Pi 共享的 `models.json` 配置 provider 和模型。
+- 用快捷配置为内置供应商（OpenCode Go/Zen、智谱、MiniMax、千问、DeepSeek、Kimi、Moonshot、小米 MiMo）粘贴 API Key 即可启用。
 - 使用 Pi 共享 agent 目录中的扩展和插件。
 - 通过内置 Skills Hub 浏览和安装公开 skill。
 - 连接 Android companion，远程查看任务线程并执行经过批准的控制操作。

@@ -126,6 +126,16 @@ const api = {
     getUsage: (range: { from: number; to: number }) => ipcRenderer.invoke("settings:getUsage", range) as Promise<import("../main/usage-service").UsageReport>,
     getMcp: () => ipcRenderer.invoke("settings:getMcp") as Promise<{ path: string; config: import("../main/mcp-service").McpConfig }>,
     saveMcp: (config: unknown) => ipcRenderer.invoke("settings:saveMcp", config),
+    searchMcpMarketplace: (options: { query?: string; attribute?: string }) =>
+      ipcRenderer.invoke("settings:searchMcpMarketplace", options) as Promise<import("../main/mcp-marketplace").McpMarketplaceSearchResult>,
+    getMcpMarketplaceDetail: (url: string) =>
+      ipcRenderer.invoke("settings:getMcpMarketplaceDetail", url) as Promise<import("../main/mcp-marketplace").McpMarketplaceDetail>,
+    installMcpServer: (request: { name: string; server: Record<string, unknown>; overwrite?: boolean }) =>
+      ipcRenderer.invoke("settings:installMcpServer", request) as Promise<{
+        path: string;
+        config: import("../main/mcp-service").McpConfig;
+        name: string;
+      }>,
     getCodemode: () => ipcRenderer.invoke("settings:getCodemode") as Promise<import("../main/mcp-service").CodemodeSettings>,
     saveCodemode: (settings: import("../main/mcp-service").CodemodeSettings) => ipcRenderer.invoke("settings:saveCodemode", settings) as Promise<import("../main/mcp-service").CodemodeSettings>,
     mcpAction: (action: "list" | "login" | "logout", name?: string, requestId = crypto.randomUUID()) => ipcRenderer.invoke("settings:mcpAction", { action, name, requestId }) as Promise<{ code: number | null; stdout: string; stderr: string; cancelled?: boolean; timedOut?: boolean }>,
@@ -135,6 +145,24 @@ const api = {
     discoverModels: (provider: Record<string, unknown>) => ipcRenderer.invoke("settings:discoverModels", provider),
     testModel: (args: { providerId: string; provider: Record<string, unknown>; modelId: string }) =>
       ipcRenderer.invoke("settings:testModel", args),
+    getProviderCredentials: (requests: { provider: string; envVar?: string }[]) =>
+      ipcRenderer.invoke("settings:getProviderCredentials", requests) as Promise<import("../main/models-service").ProviderCredentialStatus[]>,
+    saveProviderKey: (args: { provider: string; apiKey: string }) =>
+      ipcRenderer.invoke("settings:saveProviderKey", args) as Promise<{
+        ok: boolean;
+        error?: string;
+        provider?: Record<string, unknown> | null;
+        credentials?: import("../main/models-service").ProviderCredentialStatus;
+      }>,
+    removeProviderKey: (provider: string) =>
+      ipcRenderer.invoke("settings:removeProviderKey", provider) as Promise<{
+        ok: boolean;
+        error?: string;
+        provider?: Record<string, unknown> | null;
+        credentials?: import("../main/models-service").ProviderCredentialStatus;
+      }>,
+    testProviderKey: (args: { provider: string; apiKey?: string; modelId: string }) =>
+      ipcRenderer.invoke("settings:testProviderKey", args) as Promise<import("../main/models-service").ModelAvailabilityResult>,
     saveModels: (providers: Record<string, unknown>) => ipcRenderer.invoke("settings:saveModels", providers),
     getThinking: () => ipcRenderer.invoke("settings:getThinking"),
     saveThinking: (patch: Record<string, unknown>) => ipcRenderer.invoke("settings:saveThinking", patch),

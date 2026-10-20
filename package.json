@@ -1,6 +1,6 @@
 {
   "name": "pi-studio",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "piRuntimeVersion": "1.1.0",
   "private": true,
   "license": "MIT",
@@ -38,7 +38,11 @@
     "test:remote": "node scripts/test-remote-protocol.mjs",
     "test:remote-signaling": "node scripts/test-remote-signaling.mjs",
     "signaling": "node signaling/server.mjs",
-    "test:model-visibility": "node scripts/test-model-visibility.cjs"
+    "test:model-visibility": "node scripts/test-model-visibility.cjs",
+    "test:provider-presets": "node scripts/test-provider-presets.cjs",
+    "test:provider-presets-ui": "electron scripts/test-provider-presets-ui.cjs",
+    "test:mcp-marketplace": "node scripts/test-mcp-marketplace.cjs",
+    "test:mcp-marketplace-ui": "electron scripts/test-mcp-marketplace-ui.cjs"
   },
   "dependencies": {
     "@univerjs/preset-sheets-core": "1.0.3",

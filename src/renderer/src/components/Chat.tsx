@@ -13,6 +13,30 @@ import { ExtUiPromptCard } from "./ExtUiPromptCard";
 import { Sidebar, PanelRight, Copy, ThumbUp, ThumbDown, Refresh, Edit, Folder, Files, Gauge, Branch, ChevronRight } from "./icons";
 import appIconUrl from "../../../../resources/icon.png";
 
+/** "Starting Pi · 3s" while a thread's pi process boots (cold start or spare). */
+function ConnectingBadge({ language }: { language: string }) {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const started = Date.now();
+    const timer = window.setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 500);
+    return () => window.clearInterval(timer);
+  }, []);
+  return (
+    <span
+      className="chat-connecting"
+      role="status"
+      title={
+        language === "zh"
+          ? "Pi 内核启动中；历史已可浏览，发送的消息会自动等待它就绪"
+          : "Pi core is starting; history stays browsable and sending waits for it automatically"
+      }
+    >
+      <span className="spinner" /> {language === "zh" ? "Pi 内核启动中" : "Starting Pi"}
+      {seconds > 0 ? ` · ${seconds}s` : "…"}
+    </span>
+  );
+}
+
 const USER_MESSAGE_NAV_MIN_ITEMS = 6;
 
 export function Chat() {
@@ -84,7 +108,7 @@ export function Chat() {
         </div>
         <div className="chat-loading">
           <span className="spinner" />
-          正在启动 pi 进程…
+          {language === "zh" ? "正在启动 Pi 内核…" : "Starting the Pi core…"}
         </div>
       </section>
     );
@@ -229,11 +253,7 @@ export function Chat() {
             </>
           )}
         </div>
-        {!thread.connected && (
-          <span className="chat-connecting" title="pi 进程连接中；历史已可浏览，发送消息会自动等待连接完成">
-            <span className="spinner" /> 连接中
-          </span>
-        )}
+        {!thread.connected && <ConnectingBadge language={language} />}
         <button className="iconbtn" title="重命名" onClick={startRename}>
           <Edit size={14} />
         </button>

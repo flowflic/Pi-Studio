@@ -1,0 +1,102 @@
+/* MCP marketplace (Glama-backed) */
+.mcp-market-head { margin: 0 0 4px; align-items: baseline; }
+.mcp-market-head h3 { margin: 0; font-size: 15px; }
+.mcp-market-credit { color: var(--text-faint); font-size: 12px; }
+.mcp-market-credit a { color: var(--accent); text-decoration: none; }
+.mcp-market-credit a:hover { text-decoration: underline; }
+.mcp-market-search { display: flex; gap: 8px; align-items: center; margin: 10px 0 8px; }
+.mcp-market-search .set-input { flex: 1 1 auto; min-width: 0; }
+.mcp-market-search .set-btn { flex: 0 0 auto; white-space: nowrap; }
+.mcp-market-facets { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+.mcp-market-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--control);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.mcp-market-chip > span { color: var(--text-faint); font-size: 10.5px; }
+.mcp-market-chip:hover { border-color: var(--border-strong); color: var(--text); }
+.mcp-market-chip.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.mcp-market-chip.active > span { color: var(--accent); }
+.mcp-market-results { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.mcp-market-item {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  justify-content: space-between;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fcfcfa;
+  min-width: 0;
+}
+.mcp-market-item-main { min-width: 0; flex: 1 1 auto; }
+.mcp-market-item-title { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.mcp-market-item-title strong { font-size: 13px; overflow-wrap: anywhere; }
+.mcp-market-author { color: var(--text-faint); font-size: 11.5px; }
+.mcp-market-os {
+  color: var(--text-faint);
+  font-size: 10.5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 5px;
+}
+.mcp-market-desc {
+  margin: 4px 0 6px;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.mcp-market-item-links a { color: var(--accent); font-size: 11.5px; text-decoration: none; }
+.mcp-market-item-links a:hover { text-decoration: underline; }
+.mcp-market-item-actions { flex: 0 0 auto; display: flex; gap: 6px; }
+.mcp-market-foot { margin-top: 2px; }
+.mcp-market-installed { color: var(--accent); font-size: 12px; }
+.mcp-market-install { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px; }
+.mcp-market-install-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.mcp-market-install-head a { color: var(--text-faint); text-decoration: none; overflow-wrap: anywhere; }
+.mcp-market-install-head a:hover { color: var(--accent); }
+.mcp-market-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.mcp-market-field { display: flex; flex-direction: column; gap: 5px; margin: 8px 0; min-width: 0; color: var(--text-dim); font-size: 12px; }
+.mcp-market-args { min-height: 76px; font-family: var(--mono); font-size: 12px; resize: vertical; }
+.mcp-market-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto; gap: 6px; align-items: center; margin-bottom: 6px; }
+.mcp-market-warning {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #efdcae;
+  background: #fff8e6;
+  color: #77571a;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.mcp-market-overwrite { display: flex; align-items: center; gap: 6px; margin: 8px 0; color: var(--text-dim); font-size: 12px; }
+.mcp-market-preview { margin: 8px 0 10px; }
+.mcp-market-preview > summary { cursor: pointer; font-size: 12px; color: var(--text-dim); }
+.mcp-market-preview pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--control);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+:root[data-theme="dark"] .mcp-market-item { background: var(--surface-muted); }
+:root[data-theme="dark"] .mcp-market-chip { background: var(--control); border-color: var(--border); }
+:root[data-theme="dark"] .mcp-market-chip.active { background: var(--accent-soft); border-color: var(--accent); }
+:root[data-theme="dark"] .mcp-market-warning { background: #3a3123; border-color: #6b5330; color: #f0d09b; }

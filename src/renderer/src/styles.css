@@ -4228,6 +4228,244 @@ textarea.modal-input {
   font-size: 12px;
   padding: 6px 2px;
 }
+/* Quick setup for providers Pi already ships a catalog for. */
+.set-quick {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow-sm);
+}
+.set-quick-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+.set-quick-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+.set-quick-sub {
+  margin-top: 3px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+.set-quick-group {
+  margin-top: 12px;
+}
+.set-quick-group-title {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 7px;
+}
+.set-quick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(228px, 1fr));
+  gap: 8px;
+}
+.set-quick-item {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  grid-template-areas: "dot name" "dot meta";
+  align-content: center;
+  column-gap: 8px;
+  row-gap: 1px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fcfcfa;
+  padding: 8px 10px;
+  font-family: var(--font);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+.set-quick-item:hover {
+  border-color: var(--border-strong);
+}
+.set-quick-item.active {
+  border-color: var(--accent);
+  background: #fff;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.set-quick-dot {
+  grid-area: dot;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #cfcfc2;
+  align-self: center;
+}
+.set-quick-dot.on {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.set-quick-name {
+  grid-area: name;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.set-quick-meta {
+  grid-area: meta;
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+.set-quick-item.on .set-quick-meta {
+  color: var(--accent);
+}
+.set-quick-detail {
+  margin-top: 2px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  animation: set-pop 0.16s ease;
+}
+/* The panel opens directly under the selected card and spans the grid row. */
+.set-quick-grid > .set-quick-detail {
+  grid-column: 1 / -1;
+  margin: 6px 0 2px;
+  padding: 14px 16px 15px;
+  border-top: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+.set-quick-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.set-quick-detail-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.set-quick-detail-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.set-quick-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(218px, 1fr));
+  gap: 8px 18px;
+  margin: 12px 0;
+}
+.set-quick-facts > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.set-quick-facts > div.wide {
+  grid-column: 1 / -1;
+}
+.set-quick-fact-k {
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+.set-quick-fact-v {
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.set-quick-fact-v.mono {
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.set-quick-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.set-quick-chips code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+.set-quick-warn {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #efdcae;
+  background: #fff8e6;
+  color: #77571a;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.set-quick-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  margin-bottom: 8px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+.set-quick-detail-value {
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.set-quick-keyrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.set-quick-keyrow .set-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.set-quick-keyrow .set-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+/* A disabled save button must not read as an action in either theme. */
+.set-quick .set-btn.primary:disabled {
+  background: var(--control);
+  border-color: var(--border);
+  color: var(--text-faint);
+  opacity: 1;
+}
+.set-quick-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.set-quick-actions .set-model-testresult {
+  margin-left: auto;
+}
+.set-quick-link {
+  font-size: 11.5px;
+  color: var(--accent);
+  text-decoration: none;
+}
+.set-quick-link:hover {
+  text-decoration: underline;
+}
+.set-btn.ghost.danger {
+  color: #b23a2c;
+}
 .set-diag-grid {
   display: grid;
   grid-template-columns: 110px 1fr;
@@ -5601,6 +5839,7 @@ mark.hl {
 :root[data-theme="dark"] .modal,
 :root[data-theme="dark"] .set-card,
 :root[data-theme="dark"] .set-addprov-card,
+:root[data-theme="dark"] .set-quick,
 :root[data-theme="dark"] .plugins-row,
 :root[data-theme="dark"] .auto-editor,
 :root[data-theme="dark"] .auto-day,
@@ -5644,6 +5883,32 @@ mark.hl {
   color: #f0c37b;
   background: #443521;
   border-color: #6b5330;
+}
+:root[data-theme="dark"] .set-quick-item {
+  background: var(--surface-muted);
+  border-color: var(--border);
+}
+:root[data-theme="dark"] .set-quick-item:hover {
+  border-color: var(--border-strong);
+}
+:root[data-theme="dark"] .set-quick-item.active {
+  background: var(--surface);
+  border-color: var(--accent);
+}
+:root[data-theme="dark"] .set-quick-dot {
+  background: #46555d;
+}
+:root[data-theme="dark"] .set-quick-dot.on {
+  background: var(--accent);
+}
+:root[data-theme="dark"] .set-quick-warn {
+  background: #3a3123;
+  border-color: #6b5330;
+  color: #f0d09b;
+}
+:root[data-theme="dark"] .set-quick-chips code {
+  background: var(--accent-soft);
+  color: #9fe3bd;
 }
 :root[data-theme="dark"] .tool-result.err,
 :root[data-theme="dark"] .set-json.err,

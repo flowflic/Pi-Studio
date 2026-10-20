@@ -69,6 +69,186 @@ export function writeModelsProviders(providers: Record<string, ProviderDef>): Mo
   return next as ModelsFile;
 }
 
+/* ---------------- built-in provider credentials ---------------- */
+
+/**
+ * Quick setup for providers Pi already ships a catalog for. Pi resolves a
+ * `models.json` provider entry's `apiKey` itself (`configuredApiKey` in the
+ * runtime's provider composer), so Studio only has to store the key under the
+ * provider id. We deliberately never write `baseUrl`, `api` or `models` for
+ * these: Pi keeps its canonical endpoint and full catalog, including providers
+ * whose models span several protocols (OpenCode Zen/Go).
+ *
+ * Credential precedence in Pi is stored credential (`auth.json`) → configured
+ * key (`models.json`) → environment. `readProviderCredentials` reports that
+ * order so the panel can warn when an `auth.json` entry shadows a saved key.
+ */
+export type ProviderCredentialSource = "auth" | "models" | "env" | "none";
+
+export interface ProviderCredentialRequest {
+  provider: string;
+  /** Environment variable Pi also accepts for this provider. */
+  envVar?: string;
+}
+
+export interface ProviderCredentialStatus {
+  provider: string;
+  source: ProviderCredentialSource;
+  /** Masked key, `$VAR` / `!command` reference, or environment variable name. Never the secret. */
+  detail?: string;
+  /** False when a `$VAR` reference points at an unset variable. */
+  resolved: boolean;
+  /** True when `models.json` holds the key this panel manages. */
+  stored: boolean;
+  /** True when a stored `auth.json` credential takes precedence over the saved key. */
+  shadowed: boolean;
+}
+
+const PROVIDER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const MAX_API_KEY_LENGTH = 8192;
+
+/**
+ * Short, stable preview of a secret. Short keys reveal nothing; medium keys only
+ * their last four characters, so a 9–19 character token never leaks most of its
+ * value. Long keys keep a 3-character prefix to identify the vendor.
+ */
+export function maskApiKey(value: string): string {
+  const key = value.trim();
+  if (key.length <= 8) return "••••";
+  if (key.length < 20) return `…${key.slice(-4)}`;
+  return `${key.slice(0, 3)}…${key.slice(-4)}`;
+}
+
+function envNameOf(reference: string): string {
+  const match = reference.match(/^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/);
+  return match ? match[1] : "";
+}
+
+function rawProviders(): Record<string, any> {
+  const parsed = readJson<Record<string, any>>(getModelsPath());
+  const providers = parsed?.providers;
+  if (!providers || typeof providers !== "object" || Array.isArray(providers)) return {};
+  return providers as Record<string, any>;
+}
+
+function providerEntry(providerId: string): Record<string, any> | null {
+  const entry = rawProviders()[providerId];
+  return entry && typeof entry === "object" && !Array.isArray(entry) ? entry : null;
+}
+
+/** Describe the stored `models.json` key without ever returning the literal value. */
+function describeModelsKey(raw: string): { detail: string; resolved: boolean } | null {
+  const reference = raw.trim();
+  if (!reference) return null;
+  if (reference.startsWith("!")) return { detail: `${reference.slice(0, 48)}${reference.length > 48 ? "…" : ""}`, resolved: true };
+  if (reference.startsWith("$")) {
+    const name = envNameOf(reference);
+    if (!name) return { detail: reference, resolved: false };
+    return { detail: reference, resolved: Boolean(process.env[name]) };
+  }
+  return { detail: maskApiKey(reference), resolved: true };
+}
+
+/** Report which credential Pi would use for each provider, masking every secret. */
+export function readProviderCredentials(requests: ProviderCredentialRequest[]): ProviderCredentialStatus[] {
+  const providers = rawProviders();
+  const auth = readJson<Record<string, any>>(getAuthPath()) || {};
+  return (requests || []).map((request) => {
+    const provider = String(request?.provider || "").trim();
+    const storedRaw = typeof providers[provider]?.apiKey === "string" ? (providers[provider].apiKey as string).trim() : "";
+    const stored = describeModelsKey(storedRaw);
+    const storedStatus: ProviderCredentialStatus = {
+      provider,
+      source: "none",
+      resolved: false,
+      stored: Boolean(stored),
+      shadowed: false,
+      ...(stored ? { detail: stored.detail, resolved: stored.resolved } : {}),
+    };
+    const credential = auth[provider];
+    const hasCredential =
+      credential &&
+      typeof credential === "object" &&
+      (typeof credential.key === "string" || typeof credential.access === "string" || credential.type === "oauth");
+    if (hasCredential) {
+      const type = typeof credential.type === "string" ? credential.type : "";
+      const key = typeof credential.key === "string" ? credential.key.trim() : "";
+      const expired = typeof credential.expires === "number" && credential.expires > 0 && credential.expires <= Date.now();
+      const detail = key ? maskApiKey(key) : type === "oauth" ? "OAuth" : undefined;
+      return {
+        ...storedStatus,
+        source: "auth",
+        // An expired OAuth credential is present but unusable until Pi refreshes it.
+        resolved: !expired,
+        shadowed: Boolean(stored),
+        ...(detail ? { detail } : {}),
+      };
+    }
+    if (stored) return { ...storedStatus, source: "models" };
+    const envVar = String(request?.envVar || "").trim();
+    if (envVar && process.env[envVar]) {
+      return { ...storedStatus, source: "env", detail: envVar, resolved: true };
+    }
+    return storedStatus;
+  });
+}
+
+function validatedProviderId(providerId: string): string {
+  const id = String(providerId || "").trim();
+  if (!PROVIDER_ID_PATTERN.test(id)) throw new Error("Invalid provider id.");
+  return id;
+}
+
+function validatedApiKey(apiKey: string): string {
+  const key = String(apiKey || "").trim();
+  if (!key) throw new Error("API key is required.");
+  if (key.length > MAX_API_KEY_LENGTH) throw new Error("API key is too long.");
+  if (/[\r\n]/.test(key)) throw new Error("API key must be a single line.");
+  return key;
+}
+
+/**
+ * Store (or replace) one provider's API key in `models.json`, preserving every
+ * other field of that provider and every other provider untouched.
+ * Returns the stored provider object as written.
+ */
+export function writeProviderApiKey(providerId: string, apiKey: string): ProviderDef {
+  const id = validatedProviderId(providerId);
+  const key = validatedApiKey(apiKey);
+  const existing = readJson<Record<string, any>>(getModelsPath()) || {};
+  const providers = rawProviders();
+  const current = providerEntry(id) || {};
+  const nextEntry = { ...current, apiKey: key };
+  writeJsonAtomic(getModelsPath(), { ...existing, providers: { ...providers, [id]: nextEntry } });
+  return nextEntry as ProviderDef;
+}
+
+/**
+ * Remove a provider's API key. The provider entry is removed entirely when the
+ * key was its only field, so Pi falls back to `auth.json` or the environment.
+ * Returns the remaining provider object, or null when the entry is gone.
+ */
+export function deleteProviderApiKey(providerId: string): ProviderDef | null {
+  const id = validatedProviderId(providerId);
+  const existing = readJson<Record<string, any>>(getModelsPath()) || {};
+  const providers = rawProviders();
+  const current = providerEntry(id);
+  if (!current) return null;
+  const nextEntry = { ...current };
+  delete nextEntry.apiKey;
+  const nextProviders = { ...providers };
+  if (Object.keys(nextEntry).length === 0) delete nextProviders[id];
+  else nextProviders[id] = nextEntry;
+  writeJsonAtomic(getModelsPath(), { ...existing, providers: nextProviders });
+  return Object.keys(nextEntry).length ? (nextEntry as ProviderDef) : null;
+}
+
+/** The stored key for a provider, used by the probe without exposing it to the renderer. */
+function storedProviderApiKey(providerId: string): string {
+  const raw = providerEntry(providerId)?.apiKey;
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
 /* ---------------- provider model discovery ---------------- */
 
 const MODEL_DISCOVERY_TIMEOUT_MS = 20_000;
@@ -253,6 +433,7 @@ export async function testModelAvailability(
   providerId: string,
   provider: ProviderDef,
   modelId: string,
+  options: { includeStoredCredentials?: boolean } = {},
 ): Promise<ModelAvailabilityResult> {
   const started = Date.now();
   const testDir = mkdtempSync(join(tmpdir(), "pi-studio-model-test-"));
@@ -268,7 +449,9 @@ export async function testModelAvailability(
       "utf8",
     );
     const authPath = getAuthPath();
-    if (existsSync(authPath)) copyFileSync(authPath, join(testDir, "auth.json"));
+    if (options.includeStoredCredentials !== false && existsSync(authPath)) {
+      copyFileSync(authPath, join(testDir, "auth.json"));
+    }
     const runtime = await resolvePiRuntime(getConfig().piCliPath);
     const args = [
       runtime.cli,
@@ -415,6 +598,30 @@ export async function testModelAvailability(
   } finally {
     rmSync(testDir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Probe a provider credential with the same isolated agent directory the model
+ * test uses. A draft key is tested without saving; when the input is empty the
+ * already stored key is used. Stored `auth.json` credentials are excluded so the
+ * result describes this key alone.
+ */
+export async function testProviderCredential(
+  providerId: string,
+  apiKey: string | undefined,
+  modelId: string,
+): Promise<ModelAvailabilityResult> {
+  let id: string;
+  try {
+    id = validatedProviderId(providerId);
+  } catch (error: any) {
+    return { ok: false, latencyMs: 0, message: error?.message || String(error) };
+  }
+  const model = String(modelId || "").trim();
+  if (!model) return { ok: false, latencyMs: 0, message: "A model id is required to test the credential." };
+  const key = String(apiKey || "").trim() || storedProviderApiKey(id);
+  if (!key) return { ok: false, latencyMs: 0, message: "Enter an API key first." };
+  return testModelAvailability(id, { apiKey: key }, model, { includeStoredCredentials: false });
 }
 
 /* ---------------- settings.json (thinking slice) ---------------- */

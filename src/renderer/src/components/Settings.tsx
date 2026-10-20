@@ -8,6 +8,7 @@ import { Archive, Check, Close, Edit, Plus, Refresh, Folder } from "./icons";
 import appIconUrl from "../../../../resources/icon.png";
 import { UsageSettings } from "./UsageSettings";
 import { McpSettings } from "./McpSettings";
+import { ProviderPresets } from "./ProviderPresets";
 
 /* ------------------------------------------------------------------ *
  * Constants
@@ -524,6 +525,9 @@ function ProviderCard({
     if (rename(providerName)) setRenaming(false);
   };
   const models = def.models || [];
+  // A provider entry without a `models` array only overrides credentials or the
+  // endpoint, so Pi keeps serving its built-in catalog for that provider.
+  const builtinCatalog = def.models === undefined;
   return (
     <div className="set-card">
       <div className="set-card-head">
@@ -578,7 +582,15 @@ function ProviderCard({
             </button>
           </>
         )}
-        <span className="set-prov-count">{models.length} 模型</span>
+        <span className="set-prov-count">
+          {models.length > 0
+            ? `${models.length} 模型`
+            : builtinCatalog
+              ? language === "zh"
+                ? "内置模型目录"
+                : "Built-in catalog"
+              : "0 模型"}
+        </span>
         <button className="set-iconbtn danger" title="删除提供商" onClick={del}>
           ×
         </button>
@@ -653,7 +665,13 @@ function ProviderCard({
       </div>
       {models.length === 0 && (
         <div className="set-empty-mini">
-          {language === "zh" ? "暂无模型，可从供应商自动获取或手动添加。" : "No models yet. Fetch them from the provider or add one manually."}
+          {builtinCatalog
+            ? language === "zh"
+              ? "此条目只保存凭据或地址，模型沿用 Pi 内置目录；保存密钥后模型会出现在模型选择器中。"
+              : "This entry only stores credentials or an endpoint, so Pi keeps its built-in models. They appear in the composer once the credential is saved."
+            : language === "zh"
+              ? "暂无模型，可从供应商自动获取或手动添加。"
+              : "No models yet. Fetch them from the provider or add one manually."}
         </div>
       )}
       {models.map((m, i) => (
@@ -910,7 +928,11 @@ export function Settings() {
 
   useEffect(() => {
     if (!open) return;
-    setTab("models");
+    // A sidebar shortcut may request a specific tab (e.g. the MCP marketplace);
+    // plain gear opens keep the default. The request is cleared on close, so a
+    // StrictMode re-run of this effect reads the same value.
+    const requested = useStore.getState().settingsTab as Tab | null;
+    setTab(requested || "models");
     setInvalidJson({});
     setAdding(false);
     setNewProvider(emptyNewProvider());
@@ -983,6 +1005,29 @@ export function Settings() {
   /* ---- model mutations (spread preserves unknown fields) ---- */
   const updateProvider = (k: string, p: Partial<ProviderDef>) =>
     setDraft((d) => ({ ...d, providers: { ...d.providers, [k]: { ...d.providers[k], ...p } } }));
+  /**
+   * Quick setup writes a provider entry straight to models.json. Mirror that
+   * change into the draft and into its saved baseline so the unsaved-changes
+   * marker stays accurate instead of flagging a change the user never made.
+   */
+  const applyExternalProvider = (provider: string, entry: Record<string, unknown> | null) => {
+    const merge = (providers: Record<string, ProviderDef>): Record<string, ProviderDef> => {
+      const next = { ...providers };
+      if (entry) next[provider] = entry as ProviderDef;
+      else delete next[provider];
+      return next;
+    };
+    setDraft((current) => ({ ...current, providers: merge(current.providers) }));
+    setInitialProviders((current) => {
+      let parsed: Record<string, ProviderDef> = {};
+      try {
+        parsed = JSON.parse(current) as Record<string, ProviderDef>;
+      } catch {
+        /* keep the previous baseline when it is unreadable */
+      }
+      return JSON.stringify(merge(parsed));
+    });
+  };
   const renameProvider = (from: string, rawName: string): boolean => {
     const to = rawName.trim();
     if (!to) {
@@ -1298,6 +1343,11 @@ export function Settings() {
             {tab === "mcp" && <McpSettings language={language} />}
             {tab === "models" && (
               <>
+                <ProviderPresets
+                  language={language}
+                  onProviderSaved={applyExternalProvider}
+                  onModelsChanged={refreshOpenThreadModels}
+                />
                 <div className="set-prov-toolbar">
                   <span className="muted">
                     {language === "zh"

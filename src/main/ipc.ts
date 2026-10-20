@@ -27,15 +27,20 @@ import {
   getDiagnostics,
   getModelsPath,
   getSettingsPath,
+  deleteProviderApiKey,
   discoverProviderModels,
   readModelsFile,
+  readProviderCredentials,
   readThinking,
   testModelAvailability,
+  testProviderCredential,
   writeModelsProviders,
+  writeProviderApiKey,
   writeThinking,
 } from "./models-service";
 import { PiBridge, isAppManagedRuntime, resetPiRuntime, resolvePiRuntime, runtimeKind } from "./pi-bridge";
 import { createGateModeFile, ensureGateExtension, removeGateModeFile, writeGateMode } from "./permission-gate";
+import { getMcpMarketplaceDetail, installMcpServer, searchMcpMarketplace } from "./mcp-marketplace";
 import { readPreview, readRemotePreview, writePreviewHtml } from "./preview-service";
 import { getAgentDir, getSessionsDir, getTotalUsage, type ProjectSummary, readThreadHistory, scanProjects, searchThreads, type ThreadSearchHit } from "./session-store";
 import {
@@ -359,13 +364,14 @@ function createHandle(
       // Only forget the bridge if it is still the one registered under this id
       // (a delayed exit must not evict a bridge that replaced it).
       if (bridges.get(id) === handle) bridges.delete(id);
-      if (warmHandle === handle) {
-        warmHandle = null;
+      if (removeWarmSpare(handle)) {
         if (!info.expected) warmFailures++;
         // eslint-disable-next-line no-console
-        console.log(`[pi] warm spare exited (code=${info.code}, expected=${!!info.expected}, failures=${warmFailures})`);
-        // Refill unless the spare keeps dying (avoid a crash loop).
-        if (warmFailures < 3) setTimeout(() => ensureWarmBridge(), 500);
+        console.log(
+          `[pi] warm spare exited (code=${info.code}, expected=${!!info.expected}, failures=${warmFailures}, pool=${warmSpares.length}/${WARM_POOL_SIZE})`,
+        );
+        // Refill unless spares keep dying (avoid a crash loop).
+        if (warmFailures < 3) setTimeout(() => ensureWarmSpares(), 500);
       }
       removeGateModeFile(gateModeFile);
       // An intentional stop (thread close / app quit) is expected and must not
@@ -378,20 +384,27 @@ function createHandle(
 }
 
 /* ------------------------------------------------------------------ *
- * Warm spare bridge
+ * Warm spare pool
  * ------------------------------------------------------------------ *
- * pi's cold start takes ~5s on Windows: its ESM module graph is thousands
- * of small files and Windows Defender's real-time filter scans each open
- * synchronously (measured: 3.5s wall time with <100ms CPU — pure I/O wait).
- * Every thread open used to spawn a fresh process and block on it, so
- * clicks appeared dead for 5 seconds.
+ * pi's cold start is dominated by extension loading, not by pi itself: with the
+ * common coding extensions installed a boot measures 5-7s, while the same boot
+ * with no extensions takes <1s. Every thread open used to spawn a fresh
+ * process and block on that boot, so clicks appeared dead for seconds.
  *
- * Fix: keep exactly ONE fully-booted pi process on standby. thread:open
- * adopts it when the cwd matches (switching sessions on a warm process
- * measures ~0.5s vs ~5s cold) and refills the spare in the background.
- * Cost: one idle node process (~190MB); it is stopped on app quit.
+ * Fix: keep a small pool of fully-booted pi processes on standby. thread:open
+ * adopts one when the cwd matches (switching sessions on a warm process
+ * measures ~0.9s vs ~5-7s cold) and refills the pool in the background. A
+ * second spare covers bursts (several new tasks in a row) because refilling one
+ * takes a full boot; both also let the pool follow the active project through
+ * `app:prewarm`.
+ * Cost: one idle node process per spare (measured ~110MB); stopped on quit.
  */
-let warmHandle: BridgeHandle | null = null;
+const WARM_POOL_SIZE = 2;
+const warmSpares: BridgeHandle[] = [];
+/** Spares that finished booting; adopting one avoids the remaining boot wait. */
+const warmReady = new WeakSet<BridgeHandle>();
+/** Spares booted before models/providers changed; refreshed on adoption. */
+const warmStale = new WeakSet<BridgeHandle>();
 let lastOpenCwd: string | null = null;
 let warmFailures = 0;
 let warmEnabled = false;
@@ -456,39 +469,82 @@ function synchronizedCommands(raw: unknown, cwd: string): any[] {
   return result;
 }
 
-/** Spawn the standby process if there is none. Safe to call anytime. */
-export function ensureWarmBridge(): void {
-  if (!warmEnabled || warmHandle || !sendToRenderer) return;
-  if (warmFailures >= 3) return; // repeated crashes: stop respawning
+function removeWarmSpare(handle: BridgeHandle): boolean {
+  const index = warmSpares.indexOf(handle);
+  if (index === -1) return false;
+  warmSpares.splice(index, 1);
+  return true;
+}
+
+function spawnWarmSpare(): void {
+  if (!sendToRenderer) return;
   const cwd = warmCwd();
   const handle = createHandle(cwd, undefined, undefined, "sandbox", sendToRenderer);
-  warmHandle = handle;
+  warmSpares.push(handle);
+  const startedAt = Date.now();
   // eslint-disable-next-line no-console
-  console.log("[pi] warm spare spawning (cwd=" + cwd + ")");
+  console.log(`[pi] warm spare ${warmSpares.length}/${WARM_POOL_SIZE} spawning (cwd=${cwd})`);
   handle.bridge
     .start()
     .then(() => handle.bridge.getState()) // wait until pi answers: fully booted
     .then(() => {
-      if (warmHandle === handle) {
+      warmReady.add(handle);
+      if (warmSpares.includes(handle)) {
+        // Startup cost is dominated by installed extension packages; log it so a
+        // slow first thread can be attributed instead of guessed.
         // eslint-disable-next-line no-console
-        console.log("[pi] warm spare ready — thread opens are now fast");
+        console.log(
+          `[pi] warm spare ready in ${Date.now() - startedAt} ms (pool ${warmSpares.length}/${WARM_POOL_SIZE})`,
+        );
       }
     })
     .catch((err) => {
-      if (warmHandle === handle) warmHandle = null;
+      removeWarmSpare(handle);
       // A spawned-but-dead process is counted by its onExit handler; only
       // count spawn-time failures here to avoid double counting.
       if (!handle.bridge.running) warmFailures++;
       // eslint-disable-next-line no-console
       console.error("[pi] warm bridge failed to start:", (err as Error)?.message || String(err));
+      ensureWarmSpares();
     });
 }
 
-/** Kill the standby process (runtime changed, quitting, etc.). */
+/** Fill the standby pool. Safe to call anytime and from any handler. */
+export function ensureWarmSpares(): void {
+  if (!warmEnabled || !sendToRenderer) return;
+  if (warmFailures >= 3) return; // repeated crashes: stop respawning
+  while (warmSpares.length < WARM_POOL_SIZE) spawnWarmSpare();
+}
+
+/** Drop spares booted for another project so the pool follows the active one. */
+export function retargetWarmSpares(cwd: string): void {
+  for (const spare of [...warmSpares]) {
+    if (sameDir(spare.bridge.cwd, cwd)) continue;
+    removeWarmSpare(spare);
+    // eslint-disable-next-line no-console
+    console.log(`[pi] warm spare dropped (cwd "${spare.bridge.cwd}" != "${cwd}")`);
+    spare.bridge.stop();
+  }
+}
+
+/**
+ * Model and provider edits do not require a new process: the adopted spare can
+ * reload its registry over RPC in ~50 ms. Restarting it instead costs the full
+ * cold boot (5-7 s with heavy extension packages) on the next thread open.
+ * Only mark spares that already exist; a later spawn reads from disk.
+ */
+function markWarmSpareStale(): void {
+  for (const spare of warmSpares) warmStale.add(spare);
+  ensureWarmSpares();
+}
+
+/** Kill every standby process (runtime changed, quitting, etc.). */
 export function dropWarmBridge(): void {
-  if (warmHandle) {
-    warmHandle.bridge.stop();
-    warmHandle = null;
+  const dropped = warmSpares.splice(0, warmSpares.length);
+  for (const spare of dropped) spare.bridge.stop();
+  if (dropped.length) {
+    // eslint-disable-next-line no-console
+    console.log(`[pi] warm pool dropped (${dropped.length})`);
   }
 }
 
@@ -1559,7 +1615,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     if ((next.piCliPath || "") !== (prev || "")) {
       resetPiRuntime();
       dropWarmBridge(); // standby was booted from the old runtime
-      ensureWarmBridge();
+      ensureWarmSpares();
     }
     return next;
   });
@@ -1672,6 +1728,16 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     dropWarmBridge();
     return result;
   });
+  // Glama-backed MCP marketplace: browse/search, inspect, and install one server.
+  ipcMain.handle("settings:searchMcpMarketplace", (_e, options: { query?: string; attribute?: string }) =>
+    searchMcpMarketplace(options || {}),
+  );
+  ipcMain.handle("settings:getMcpMarketplaceDetail", (_e, url: string) => getMcpMarketplaceDetail(url));
+  ipcMain.handle("settings:installMcpServer", (_e, request: { name: string; server: Record<string, unknown>; overwrite?: boolean }) => {
+    const result = installMcpServer(request);
+    dropWarmBridge();
+    return result;
+  });
   const mcpActions = new Map<string, AbortController>();
   ipcMain.handle("settings:cancelMcpAction", (event, requestId: string) => {
     mcpActions.get(`${event.sender.id}:${requestId}`)?.abort();
@@ -1747,14 +1813,14 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     return updateConfig({ pinnedThreads: next });
   });
 
-  // Pre-warm the standby pi process for the project the user is looking at, so
-  // a subsequent "new task" adopts an already-booted process (~0.5s) instead of
-  // cold-starting (~5s). Re-targets the spare when the active project changes.
+  // Pre-warm the standby pool for the project the user is looking at, so a
+  // subsequent "new task" adopts an already-booted process (~0.9s) instead of
+  // cold-starting (~5-7s). Re-targets spares when the active project changes.
   ipcMain.handle("app:prewarm", (_e, cwd: string) => {
     if (!cwd || typeof cwd !== "string") return { ok: false };
     lastOpenCwd = cwd;
-    if (warmHandle && !sameDir(warmHandle.bridge.cwd, cwd)) dropWarmBridge();
-    ensureWarmBridge();
+    retargetWarmSpares(cwd);
+    ensureWarmSpares();
     return { ok: true };
   });
 
@@ -1827,10 +1893,11 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   );
   ipcMain.handle("settings:saveModels", (_e, providers: Record<string, unknown>) => {
     writeModelsProviders(providers as any);
-    // The standby process also caches its model registry. Recreate it now so a
-    // new task opened after saving does not adopt a stale pre-save process.
-    dropWarmBridge();
-    ensureWarmBridge();
+    // The standby process caches its model registry. Mark it stale instead of
+    // rebuilding it: adoption refreshes the registry over RPC in ~50 ms, while a
+    // rebuild would add a full cold boot (5-7 s with heavy extension packages)
+    // to the next thread the user opens.
+    markWarmSpareStale();
     // Return the user-facing form so the Settings panel immediately reflects
     // the canonical `/v1` convention after saving (runtime storage may differ
     // for Anthropic).
@@ -1838,6 +1905,36 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   });
   ipcMain.handle("settings:getThinking", () => readThinking());
   ipcMain.handle("settings:saveThinking", (_e, patch: Record<string, unknown>) => writeThinking(patch as any));
+  // ---- quick setup for built-in providers: keys live in models.json --------
+  // Saving only writes `providers[<id>].apiKey`; Pi keeps its built-in endpoint
+  // and catalog for that provider. The spare reloads its credential/model state
+  // when it is adopted, so the next task needs no cold boot.
+  ipcMain.handle("settings:getProviderCredentials", (_e, requests: { provider: string; envVar?: string }[]) =>
+    readProviderCredentials(Array.isArray(requests) ? requests : []),
+  );
+  ipcMain.handle("settings:saveProviderKey", (_e, args: { provider: string; apiKey: string }) => {
+    try {
+      const provider = writeProviderApiKey(args?.provider || "", args?.apiKey || "");
+      markWarmSpareStale();
+      return { ok: true, provider, credentials: readProviderCredentials([{ provider: args?.provider || "" }])[0] };
+    } catch (e: any) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  });
+  ipcMain.handle("settings:removeProviderKey", (_e, providerId: string) => {
+    try {
+      const provider = deleteProviderApiKey(providerId || "");
+      markWarmSpareStale();
+      return { ok: true, provider, credentials: readProviderCredentials([{ provider: providerId || "" }])[0] };
+    } catch (e: any) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  });
+  ipcMain.handle(
+    "settings:testProviderKey",
+    (_e, args: { provider: string; apiKey?: string; modelId: string }) =>
+      testProviderCredential(args?.provider || "", args?.apiKey, args?.modelId || ""),
+  );
   ipcMain.handle("settings:getDiagnostics", () => getDiagnostics());
   ipcMain.handle("settings:openPath", async (_e, abs: string) => {
     try {
@@ -1910,29 +2007,34 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     const permission = resolvePermission(sessionFile, args.permission);
     let handle: BridgeHandle | null = null;
     let adopted = false;
-    const spareAtEntry = !!warmHandle;
-    // Try to adopt the warm spare: switching a booted process is ~0.5s vs
-    // ~5s for a cold start. A dead spare is dropped, a spare booted for
-    // another project is replaced so the standby converges on the project
-    // actually in use.
-    if (!name && warmHandle) {
-      if (!warmHandle.bridge.running) {
+    const spareAtEntry = warmSpares.length > 0;
+    // Adopt a booted spare: switching sessions on a warm process measures
+    // ~0.9s vs ~5-7s cold. Prefer one that already answered get_state so the
+    // open never waits on a remaining boot. A spare booted for another project
+    // is dropped; the pool refills for the project actually in use.
+    if (!name) {
+      for (const spare of [...warmSpares]) {
+        if (!spare.bridge.running) removeWarmSpare(spare);
+      }
+      if (warmSpares.some((spare) => !sameDir(spare.bridge.cwd, cwd))) {
         // eslint-disable-next-line no-console
-        console.log("[pi] thread:open dropping dead warm spare -> cold start");
-        dropWarmBridge();
-      } else if (!sameDir(warmHandle.bridge.cwd, cwd)) {
-        // eslint-disable-next-line no-console
-        console.log(`[pi] thread:open cwd mismatch (warm="${warmHandle.bridge.cwd}" requested="${cwd}") -> cold start, spare respawns for new cwd`);
-        dropWarmBridge();
-      } else {
-        handle = warmHandle;
-        warmHandle = null;
+        console.log(`[pi] thread:open retargeting warm pool to "${cwd}"`);
+        retargetWarmSpares(cwd);
+      }
+      const candidates = warmSpares.filter((spare) => spare.bridge.running && sameDir(spare.bridge.cwd, cwd));
+      const chosen = candidates.find((spare) => warmReady.has(spare)) || candidates[0];
+      if (chosen) {
+        handle = chosen;
+        removeWarmSpare(chosen);
         adopted = true;
         warmFailures = 0;
         handle.permission = permission;
         writeGateMode(handle.gateModeFile, permission);
         // eslint-disable-next-line no-console
-        console.log("[pi] thread:open adopting warm spare" + (sessionFile ? " (switch_session)" : " (fresh)"));
+        console.log(
+          `[pi] thread:open adopting ${warmReady.has(chosen) ? "booted" : "booting"} warm spare` +
+            (sessionFile ? " (switch_session)" : " (fresh)"),
+        );
       }
     }
     if (!handle) {
@@ -1946,6 +2048,22 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     try {
       await handle.bridge.start(); // no-op for the already-running spare
       if (adopted) {
+        if (warmStale.has(handle)) {
+          // Model/provider settings changed while the spare idled. The registry
+          // refresh costs tens of milliseconds; rebuilding the process would
+          // cost a full cold boot on the next thread.
+          warmStale.delete(handle);
+          const refreshAt = Date.now();
+          try {
+            await handle.bridge.prompt("/pi-studio-refresh-models");
+            // eslint-disable-next-line no-console
+            console.log(`[pi] warm spare reloaded its model registry in ${Date.now() - refreshAt} ms`);
+          } catch (error: any) {
+            // The spare stays usable with its boot-time catalog.
+            // eslint-disable-next-line no-console
+            console.error("[pi] warm spare model refresh failed:", error?.message || String(error));
+          }
+        }
         if (sessionFile) {
           await handle.bridge.switchSession(sessionFile);
         } else {
@@ -1984,7 +2102,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
       handle.bridge.stop();
       throw e;
     } finally {
-      ensureWarmBridge(); // keep exactly one spare booted for the next open
+      ensureWarmSpares(); // keep exactly one spare booted for the next open
     }
   });
 
@@ -2010,7 +2128,12 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
       bridges.delete(id);
       handle.bridge.stop();
     }
-    if (warmHandle && sameSessionFile(warmHandle.getId(), target)) dropWarmBridge();
+    for (const spare of [...warmSpares]) {
+      if (sameSessionFile(spare.getId(), target)) {
+        removeWarmSpare(spare);
+        spare.bridge.stop();
+      }
+    }
 
     await unlinkSessionWithRetry(target);
 
@@ -2193,7 +2316,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   ipcMain.handle("plugins:setPackageEnabled", (_e, args: { source: string; enabled: boolean }) => {
     setPackageEnabled(args.source, args.enabled);
     dropWarmBridge();
-    ensureWarmBridge();
+    ensureWarmSpares();
     return { ok: true };
   });
   ipcMain.handle("plugins:installPackage", async (_e, source: string) => {
@@ -2210,7 +2333,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
       // Settings and immediately restores thread startup.
       setPackageEnabled(source, false);
       dropWarmBridge();
-      ensureWarmBridge();
+      ensureWarmSpares();
       return {
         ok: false,
         output: [installOutput, "Installed, but Pi could not load the extension. It was disabled automatically.", probe.output]
@@ -2219,14 +2342,14 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
       };
     }
     dropWarmBridge();
-    ensureWarmBridge();
+    ensureWarmSpares();
     return { ok: true, output: installOutput };
   });
   ipcMain.handle("plugins:removePackage", async (_e, source: string) => {
     const res = await runPiCli(["remove", source]);
     removePackageEntry(source); // ensure it is gone from settings regardless of CLI result
     dropWarmBridge();
-    ensureWarmBridge();
+    ensureWarmSpares();
     return { ok: true, output: (res.stdout + res.stderr).trim() };
   });
   ipcMain.handle("plugins:getSkills", () => listManagedSkills());
@@ -2235,7 +2358,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     // A skill is loaded during pi startup. Recreate the warm spare so newly
     // opened tasks immediately observe enable/disable changes.
     dropWarmBridge();
-    ensureWarmBridge();
+    ensureWarmSpares();
     return { ok: true };
   });
   // Update installed extension packages. With no source, updates all of them
@@ -2246,7 +2369,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     const res = await runPiCli(args);
     if (res.code === 0) {
       dropWarmBridge();
-      ensureWarmBridge();
+      ensureWarmSpares();
     }
     return { ok: res.code === 0, code: res.code, output: (res.stdout + res.stderr).trim() };
   });
@@ -2259,7 +2382,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
       // The official CLI writes to ~/.pi/agent/skills. Recreate the warm
       // bridge so a newly opened task can discover the skill immediately.
       dropWarmBridge();
-      ensureWarmBridge();
+      ensureWarmSpares();
     }
     return result;
   });
@@ -2310,7 +2433,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
       const result = await installCoreUpdate((p) => send("pi:coreUpdate", p));
       if (result.updated) {
         dropWarmBridge(); // standby runs the old version; respawn from the new tree
-        ensureWarmBridge();
+        ensureWarmSpares();
       }
       return {
         ok: result.ok,
@@ -2370,5 +2493,5 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
 
   // ---- warm spare ----------------------------------------------------------
   // Boot one standby pi process so the first thread open is fast too.
-  ensureWarmBridge();
+  ensureWarmSpares();
 }
