@@ -181,6 +181,10 @@ const api = {
   },
   on: {
     event: (cb: (p: { threadId: string; event: any }) => void) => on("pi:event", cb),
+    /** A thread whose pi core was already handed to the UI has finished loading
+     *  its extensions; carries the model/command metadata that becomes known
+     *  only then. */
+    threadReady: (cb: (p: { threadId: string; previousId?: string; snapshot: any }) => void) => on("pi:thread-ready", cb),
     extui: (cb: (p: { threadId: string; request: any }) => void) => on("pi:extui", cb),
     exit: (cb: (p: { threadId: string; code: number | null; signal: string | null; stderr: string }) => void) => on("pi:exit", cb),
     error: (cb: (p: { threadId: string; message: string }) => void) => on("pi:error", cb),

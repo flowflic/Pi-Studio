@@ -42,7 +42,7 @@ Pi Studio 是一个独立的 Electron 桌面客户端，用于运行 [Pi coding 
 - **Office 文件预览** —— 本地只读的 Univer 表格视图，支持工作表切换、公式栏、缩放，以及常见 XLSX 样式、合并单元格、行高列宽和冻结行列；DOCX 使用分页视图，保留页眉、页脚与表格，支持适应宽度。无需转换服务器，不上传文件。图表、图片、透视表和条件格式尚未完整导入，大文件会明确提示预览范围限制；PPTX 保留现有基础预览。
 - **Token 用量热力图** —— 在设置中按今天、近 7 天、近 30 天、近一年或自定义日期查看用量，支持每日、每周、累计视图；绿色色阶跟随界面主题。包含输入、输出、缓存、模型用量与估算费用，并对分支复制记录去重。
 - **MCP 市场（Glama）** —— 设置 → MCP 中新增市场面板，数据来自 [Glama MCP 目录](https://glama.ai/mcp/servers)。支持关键词搜索、按分类/语言/托管方式筛选，并读取服务器页面上的安装示例填入启动命令、参数和环境变量；安装前可编辑、查看生成的 `mcp.json` 条目，重名需显式确认覆盖。安装直接写入 Pi 共享的 `mcp.json`，成功后运行 `/reload` 即可加载工具。面板遵守 Glama 的数据署名要求，显示来源链接，并为每条记录提供回链。左侧栏“插件”下方新增“MCP 市场”快捷入口，点击直接打开该页。
-- **Pi Agent 0.99.1 与 MCP** —— 内置官方 MCP、Codemode 和工具搜索。在设置 → MCP 中添加或编辑 `mcpServers` JSON、启停或移除服务器、检查连接与工具，以及执行 OAuth 登录/退出。支持 stdio 与 Streamable HTTP；保存后在聊天中执行 `/reload` 或重新打开聊天。聊天支持嵌套工具调用记录、扩展状态与文本组件。
+- **Pi Agent 1.3.0 与 MCP** —— 内置官方 MCP、Codemode 和工具搜索。在设置 → MCP 中添加或编辑 `mcpServers` JSON、启停或移除服务器、检查连接与工具，以及执行 OAuth 登录/退出。支持 stdio 与 Streamable HTTP；保存后在聊天中执行 `/reload` 或重新打开聊天。聊天支持嵌套工具调用记录、扩展状态与文本组件。
 - **插件管理** —— 支持搜索、安装、更新、启用、停用和删除来自 npm、GitHub 或本地路径的 Pi extension 包；同一面板也会列出 Pi 共享目录和当前项目中发现的 skill。
 - **Skills Hub** —— 浏览和搜索公开的 [skills.sh](https://skills.sh/) 目录，查看 skill 详情与安装命令，并直接安装到 Pi。
 - **Android 手机远程控制** —— 通过短时有效的二维码与桌面端配对，配置 Signal WSS 地址，查看连接状态并管理可信设备。远程传输使用带 STUN 发现的直连 WebRTC，并有意拒绝 TURN/relay 候选；针对 Pi-Studio-Remote 0.2，项目相对路径预览还支持受限的 Excel/CSV 表格快照。
@@ -76,7 +76,7 @@ Pi Studio 是一个独立的 Electron 桌面客户端，用于运行 [Pi coding 
 - 安装项目内独立的 Pi coding agent 运行时（开发和打包均可使用）：
 
 ```powershell
-npm install --global --prefix .runtime-source @earendil-works/pi-coding-agent@0.99.1
+npm install --global --prefix .runtime-source @earendil-works/pi-coding-agent@1.3.0
 ```
 
 ## 开发
@@ -97,7 +97,7 @@ npm run dist              # 打包、构建并创建安装包
 npm run pack              # 创建未打包的目录构建产物
 ```
 
-构建产物写入 `release/`。`npm run dist` 会创建包含内置运行时归档的 Electron 安装包；`release/` 中生成的归档会保留用于 QA，不需要单独上传。仓库在 `package.json` 中固定 Pi 运行时版本 `0.99.1`，打包脚本会在创建归档前校验该版本，优先使用 `.runtime-source` 中的安装，也兼容匹配版本的全局 Pi。如需从指定的本地安装位置打包，可将 `PI_PACKAGE_DIR` 设置为对应的 package 目录。
+构建产物写入 `release/`。`npm run dist` 会创建包含内置运行时归档的 Electron 安装包；`release/` 中生成的归档会保留用于 QA，不需要单独上传。仓库在 `package.json` 中固定 Pi 运行时版本 `1.3.0`，打包脚本会在创建归档前校验该版本，优先使用 `.runtime-source` 中的安装，也兼容匹配版本的全局 Pi。如需从指定的本地安装位置打包，可将 `PI_PACKAGE_DIR` 设置为对应的 package 目录。
 
 新增功能验证：`npm run test:usage-mcp`、`npm run test:settings-ui`。执行 `npm run bundle` 后可运行 `npm run test:runtime-mcp`，它使用隔离配置和本地模拟 MCP/模型服务检查打包运行时升级与真实嵌套调用，不使用用户凭据。
 

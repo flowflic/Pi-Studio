@@ -54,9 +54,14 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
   const projectMenuRef = useRef<HTMLDivElement>(null);
   const threadMenuRef = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<{ startX: number; startWidth: number; width: number } | null>(null);
-  // Point the warm pi pool at a project as soon as the user shows intent, so
-  // the first new thread does not pay the full cold boot.
-  const prewarmTimer = useRef<number | null>(null);
+  // Point the warm pi pool at a project when the user actually selects it, so
+  // the first new thread there does not pay the full cold boot.
+  //
+  // This deliberately does NOT run on hover. A hover used to retarget the pool,
+  // which stopped the spare that was booting for the active project: moving the
+  // pointer across a few projects before clicking "New task" left the pool
+  // permanently cold, and the click then waited out a contended boot. Booting a
+  // spare costs several seconds and must never be thrown away for a hover.
   const lastPrewarm = useRef<{ cwd: string; at: number } | null>(null);
   const prewarmFor = (cwd: string) => {
     const now = Date.now();
@@ -65,15 +70,6 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
     lastPrewarm.current = { cwd, at: now };
     window.pi.app.prewarm(cwd).catch(() => {});
   };
-  const schedulePrewarm = (cwd: string) => {
-    if (prewarmTimer.current) window.clearTimeout(prewarmTimer.current);
-    prewarmTimer.current = window.setTimeout(() => prewarmFor(cwd), 250);
-  };
-  const cancelPrewarm = () => {
-    if (prewarmTimer.current) window.clearTimeout(prewarmTimer.current);
-    prewarmTimer.current = null;
-  };
-  useEffect(() => () => cancelPrewarm(), []);
   useOutsideClose(usageRef, usageOpen, () => setUsageOpen(false));
   useOutsideClose(projectMenuRef, !!projectMenu, () => setProjectMenu(null));
   useOutsideClose(threadMenuRef, !!threadMenu, () => setThreadMenu(null));
@@ -291,8 +287,6 @@ export function Sidebar({ onOpenRemote, remoteOpen = false }: { onOpenRemote: ()
                 <div className="project" key={p.cwd}>
                   <div
                     className={`project-head ${open ? "open" : ""}`}
-                    onMouseEnter={() => schedulePrewarm(p.cwd)}
-                    onMouseLeave={cancelPrewarm}
                     onClick={() => {
                       prewarmFor(p.cwd);
                       toggleProject(p.cwd);

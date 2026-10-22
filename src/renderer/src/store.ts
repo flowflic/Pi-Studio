@@ -724,8 +724,7 @@ function emptyThread(cwd: string): ThreadState {
   };
 }
 
-function threadFromResponse(res: any, fallback: ThreadState, pendingEditorText?: string): ThreadState {
-  const { views, toolRuns } = historyToView(res.messages || [], res.branchMessages || []);
+function threadFromResponse(res: any, fallback: ThreadState, pendingEditorText?: string): ThreadState {  const { views, toolRuns } = historyToView(res.messages || [], res.branchMessages || []);
   const replyStartedAt = res.isStreaming ? res.replyStartedAt ?? fallback.replyStartedAt : undefined;
   if (replyStartedAt !== undefined) {
     for (let i = views.length - 1; i >= 0 && views[i].role === "assistant"; i--) {
@@ -743,6 +742,7 @@ function threadFromResponse(res: any, fallback: ThreadState, pendingEditorText?:
     levels: fallback.levels || ["off"],
     commands: res.commands || [],
     connected: true,
+    ready: res.ready !== false,
     isStreaming: !!res.isStreaming,
     replyStartedAt,
     streaming: replyStartedAt !== undefined && views[views.length - 1]?.role !== "assistant" ? { ...newAssistant(), replyStartedAt } : null,
@@ -752,6 +752,28 @@ function threadFromResponse(res: any, fallback: ThreadState, pendingEditorText?:
     pendingEditorText,
     extensionStatuses: fallback.extensionStatuses,
     extensionWidgets: fallback.extensionWidgets,
+  };
+}
+
+/**
+ * Apply the metadata that only becomes available once pi finished loading its
+ * extension packages. The transcript, streaming flags and optimistic bubbles
+ * stay renderer-owned: a prompt may already be running by then.
+ */
+function withReadySnapshot(base: ThreadState, snapshot: any): ThreadState {
+  if (!snapshot) return { ...base, connected: true, ready: true, error: undefined };
+  return {
+    ...base,
+    sessionFile: snapshot.sessionFile || base.sessionFile,
+    sessionName: base.isNewSession ? base.sessionName : snapshot.sessionName ?? base.sessionName,
+    model: snapshot.model ?? base.model,
+    models: snapshot.models?.length ? snapshot.models : base.models,
+    thinking: snapshot.thinkingLevel || base.thinking,
+    commands: snapshot.commands?.length ? snapshot.commands : base.commands,
+    permission: snapshot.permission || base.permission,
+    connected: true,
+    ready: true,
+    error: undefined,
   };
 }
 
@@ -1124,6 +1146,8 @@ interface PiStore {
   dismissToast: (id: string) => void;
 
   handleEvent: (threadId: string, event: any) => void;
+  /** Extensions finished loading for a thread whose core was handed over early. */
+  handleThreadReady: (payload: { threadId: string; previousId?: string; snapshot: any }) => void;
   handleExtUi: (threadId: string, req: ExtUiRequest) => void;
   respondExtUi: (threadId: string, id: string, payload: Record<string, unknown>) => void;
   handleExit: (threadId: string, info: { code: number | null; stderr: string }) => void;
@@ -1183,6 +1207,12 @@ const treeKey = (cwd: string, rel?: string) => `${cwd}::${rel || ""}`;
 /** In-flight background connects keyed by thread id, so a click and a
  *  same-tick prompt share one process boot instead of spawning two. */
 const connectPromises = new Map<string, Promise<string | null>>();
+
+/** Extension-ready payloads that arrived before the open response was merged.
+ *  The core can answer faster than the renderer processes the invoke result
+ *  (warm spare + tiny session), so the metadata is applied on merge instead of
+ *  being dropped and leaving the thread stuck in "loading extensions". */
+const pendingThreadReady = new Map<string, { threadId: string; previousId?: string; snapshot: any }>();
 
 /* ------------------------------------------------------------------ *
  * Event batching
@@ -1694,7 +1724,18 @@ export const useStore = create<PiStore>()((set, get) => ({
             extensionStatuses: prev?.extensionStatuses,
             extensionWidgets: prev?.extensionWidgets,
           };
-          const threads: Record<string, ThreadState> = { ...s.threads, [id]: merged };
+          // The core can finish loading extensions before this response is
+          // merged; apply that metadata now instead of leaving the thread in
+          // "loading extensions" until an event that already fired.
+          let readyThread = merged;
+          const early = pendingThreadReady.get(id) || pendingThreadReady.get(threadId);
+          if (early) {
+            pendingThreadReady.delete(id);
+            pendingThreadReady.delete(threadId);
+            if (early.previousId) pendingThreadReady.delete(early.previousId);
+            readyThread = withReadySnapshot(merged, early.snapshot);
+          }
+          const threads: Record<string, ThreadState> = { ...s.threads, [id]: readyThread };
           let openThreadIds = s.openThreadIds;
           let activeThreadId = s.activeThreadId;
           if (id !== threadId) {
@@ -2134,6 +2175,44 @@ export const useStore = create<PiStore>()((set, get) => ({
     // Queued and folded into one store update per frame (see scheduleEventFlush).
     eventQueue.push({ threadId, event });
     scheduleEventFlush();
+  },
+
+  handleThreadReady: (payload) => {
+    const { threadId, previousId, snapshot } = payload || ({} as any);
+    if (!threadId || !snapshot) return;
+    const current = get();
+    const known = current.threads[threadId] || (previousId ? current.threads[previousId] : undefined);
+    if (!known) {
+      // The open response has not been merged yet: remember it for the merge.
+      // Bounded so a ready event for a thread that was closed immediately
+      // cannot accumulate.
+      if (pendingThreadReady.size >= 32) {
+        const oldest = pendingThreadReady.keys().next().value;
+        if (oldest) pendingThreadReady.delete(oldest);
+      }
+      pendingThreadReady.set(threadId, payload);
+      if (previousId) pendingThreadReady.set(previousId, payload);
+      return;
+    }
+    set((s) => {
+      // The id is normally identical (the session path is pre-assigned before
+      // pi boots); keep the remap path for the rare case pi reports another file.
+      const sourceId = s.threads[threadId] ? threadId : previousId && s.threads[previousId] ? previousId : null;
+      if (!sourceId) return s;
+      const next = withReadySnapshot(s.threads[sourceId], snapshot);
+      if (sourceId === threadId) return { threads: { ...s.threads, [threadId]: next } };
+      const threads = { ...s.threads, [threadId]: next };
+      delete threads[sourceId];
+      return {
+        threads,
+        openThreadIds: s.openThreadIds.map((id) => (id === sourceId ? threadId : id)),
+        activeThreadId: s.activeThreadId === sourceId ? threadId : s.activeThreadId,
+      };
+    });
+    window.pi.thread
+      .getThinkingLevels(threadId)
+      .then((r: any) => set((s) => (s.threads[threadId] ? { threads: { ...s.threads, [threadId]: { ...s.threads[threadId], levels: r?.levels || ["off"] } } } : s)))
+      .catch(() => {});
   },
 
   handleExtUi: (threadId, req) => {

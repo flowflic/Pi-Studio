@@ -205,6 +205,10 @@ export interface ThreadState {
   /** True once a live pi process backs this thread. A thread can show its full
    *  transcript (read from disk) while still disconnected; interaction connects. */
   connected?: boolean;
+  /** False while pi is still loading extensions for a just-opened thread. The
+   *  core is already running and prompts are queued, so this only drives a
+   *  quiet indicator — it never blocks the composer. */
+  ready?: boolean;
   isStreaming: boolean;
   replyStartedAt?: number;
   messages: ViewMessage[];

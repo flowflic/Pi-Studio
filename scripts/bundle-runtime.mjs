@@ -11,7 +11,7 @@
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -179,6 +179,7 @@ function bundlePi(source) {
   cpSync(join(source, "dist"), join(destination, "dist"), { recursive: true });
   cpSync(join(source, "node_modules"), join(destination, "node_modules"), { recursive: true });
   cpSync(join(source, "package.json"), join(destination, "package.json"));
+  flattenLocalHoistedDeps(source, join(destination, "node_modules"));
 
   const before = directoryStats(destination);
   pruneTree(destination);
@@ -188,6 +189,92 @@ function bundlePi(source) {
   const packageJson = JSON.parse(readFileSync(join(source, "package.json"), "utf8"));
   if (typeof packageJson.version !== "string" || !packageJson.version) throw new Error("pi package has no version");
   return packageJson.version;
+}
+
+/** True when `child` is inside `parent` (both resolved absolute paths). */
+function isInside(parent, child) {
+  const base = resolve(parent) + sep;
+  return resolve(child).startsWith(base);
+}
+
+/**
+ * npm hoists dependencies next to the package for a *local* install
+ * (`npm install --prefix .runtime-source`): only the dependencies that conflict
+ * stay under `pi-coding-agent/node_modules`, everything else lands in
+ * `.runtime-source/node_modules`. The bundled runtime is copied as a
+ * self-contained tree, so those hoisted siblings must be flattened back under
+ * `pi/node_modules` — otherwise the packaged pi cannot resolve e.g. `undici`.
+ *
+ * Only the project-local runtime directory is flattened: a globally installed
+ * package already keeps its dependencies nested, and a global `node_modules`
+ * may contain unrelated packages that must not ship.
+ */
+function flattenLocalHoistedDeps(source, destinationModules) {
+  const localRoot = join(ROOT, ".runtime-source", "node_modules");
+  if (!isInside(localRoot, source)) return;
+  let entries = [];
+  try {
+    entries = readdirSync(localRoot, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const copied = [];
+  const copyPackage = (relative) => {
+    const from = join(localRoot, relative);
+    const to = join(destinationModules, relative);
+    if (existsSync(to)) return;
+    mkdirSync(dirname(to), { recursive: true });
+    cpSync(from, to, { recursive: true });
+    copied.push(relative);
+  };
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === ".bin") continue;
+    if (entry.name.startsWith("@")) {
+      let children = [];
+      try {
+        children = readdirSync(join(localRoot, entry.name), { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const child of children) {
+        if (!child.isDirectory()) continue;
+        // The installed pi package itself is already the bundle root.
+        if (`${entry.name}/${child.name}` === "@earendil-works/pi-coding-agent") continue;
+        copyPackage(join(entry.name, child.name));
+      }
+      continue;
+    }
+    copyPackage(entry.name);
+  }
+  if (copied.length) log(`flattened ${copied.length} hoisted dependencies into pi/node_modules`);
+}
+
+/**
+ * The archive is worthless if pi cannot boot from it. A missing dependency is
+ * otherwise only discovered by users after installing the app, so fail the
+ * build here instead.
+ */
+function verifyBundledRuntime() {
+  const node = join(STAGE, "node", nodeExe());
+  const cli = join(STAGE, "pi", "dist", "cli.js");
+  try {
+    const version = execFileSync(node, [cli, "--version"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 120_000,
+    }).trim();
+    if (version !== EXPECTED_PI_VERSION) {
+      throw new Error(`reported version ${version}, expected ${EXPECTED_PI_VERSION}`);
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `bundled runtime cannot start (${detail}). ` +
+        `Install the Pi package as a self-contained tree, e.g. ` +
+        `"npm install --global --prefix .runtime-source @earendil-works/pi-coding-agent@${EXPECTED_PI_VERSION}".`,
+    );
+  }
+  log(`verified bundled runtime: pi ${EXPECTED_PI_VERSION} starts`);
 }
 
 function sha512Base64(file) {
@@ -216,6 +303,7 @@ function main() {
   if (runtimeVersion !== EXPECTED_PI_VERSION) {
     throw new Error(`Pi runtime version mismatch: expected v${EXPECTED_PI_VERSION}, found v${runtimeVersion}`);
   }
+  verifyBundledRuntime();
   const fileName = `Pi-Studio-Runtime-${runtimeVersion}-${platformSlug}-${process.arch}.tar.gz`;
   const archive = join(RUNTIME_OUT, fileName);
   rmSync(archive, { force: true });

@@ -74,7 +74,7 @@ Each installer contains a native pinned Node.js + Pi runtime. On first launch, P
 - Install an isolated Pi coding agent runtime in the project for development and packaging:
 
 ```powershell
-npm install --global --prefix .runtime-source @earendil-works/pi-coding-agent@0.99.1
+npm install --global --prefix .runtime-source @earendil-works/pi-coding-agent@1.3.0
 ```
 
 ## Development
@@ -95,7 +95,7 @@ npm run dist              # Bundle, build, and create the installer
 npm run pack              # Create an unpacked directory build
 ```
 
-Build output is written to `release/`. `npm run dist` creates the Electron installer with the runtime archive embedded inside it; the generated archive in `release/` is retained for QA and does not need to be uploaded separately. The repository pins Pi runtime `0.99.1` in `package.json`. Packaging prefers `.runtime-source` and also accepts a matching global installation. To package from a specific local installation, set `PI_PACKAGE_DIR` to its package directory.
+Build output is written to `release/`. `npm run dist` creates the Electron installer with the runtime archive embedded inside it; the generated archive in `release/` is retained for QA and does not need to be uploaded separately. The repository pins Pi runtime `1.3.0` in `package.json`. Packaging prefers `.runtime-source` and also accepts a matching global installation. To package from a specific local installation, set `PI_PACKAGE_DIR` to its package directory.
 
 Settings → Token usage offers a green heatmap with daily, weekly and cumulative views, date filters, input/output/cache totals, model breakdowns and estimated costs. Usage comes from saved sessions with forked records deduplicated.
 

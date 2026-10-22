@@ -364,6 +364,9 @@ function createHandle(
       // Only forget the bridge if it is still the one registered under this id
       // (a delayed exit must not evict a bridge that replaced it).
       if (bridges.get(id) === handle) bridges.delete(id);
+      // A spare that dies while booting must release the serialized boot slot,
+      // otherwise the pool would never be allowed to spawn again.
+      endWarmBoot(handle);
       if (removeWarmSpare(handle)) {
         if (!info.expected) warmFailures++;
         // eslint-disable-next-line no-console
@@ -387,22 +390,37 @@ function createHandle(
  * Warm spare pool
  * ------------------------------------------------------------------ *
  * pi's cold start is dominated by extension loading, not by pi itself: with the
- * common coding extensions installed a boot measures 5-7s, while the same boot
- * with no extensions takes <1s. Every thread open used to spawn a fresh
- * process and block on that boot, so clicks appeared dead for seconds.
+ * common coding extensions installed a boot measures 8-13s on this machine
+ * (4-5s of it extension imports alone), while the same boot with no extensions
+ * takes <1s. Every thread open used to spawn a fresh process and block on that
+ * boot, so clicks appeared dead for seconds.
  *
- * Fix: keep a small pool of fully-booted pi processes on standby. thread:open
- * adopts one when the cwd matches (switching sessions on a warm process
- * measures ~0.9s vs ~5-7s cold) and refills the pool in the background. A
- * second spare covers bursts (several new tasks in a row) because refilling one
- * takes a full boot; both also let the pool follow the active project through
- * `app:prewarm`.
+ * Fix: keep fully-booted pi processes on standby. thread:open adopts one when
+ * the cwd matches (switching sessions on a warm process measures ~1.3s) and
+ * refills the pool in the background.
+ *
+ * Two rules keep the pool from making the first click *slower* than one cold
+ * start, which is what a "new task takes 30s" report actually is:
+ *  1. Only one spare boots at a time. Concurrent boots read the same thousands
+ *     of modules (pi's ESM graph + every extension); with Windows Defender
+ *     scanning each open they inflate each other, so the first spare stays
+ *     unready exactly when the user clicks.
+ *  2. A boot in flight is never discarded. The sidebar warms a project as soon
+ *     as it is clicked; retargeting used to kill a spare that was still booting
+ *     and restart from zero, so the pool could stay permanently cold.
+ *
  * Cost: one idle node process per spare (measured ~110MB); stopped on quit.
  */
 const WARM_POOL_SIZE = 2;
+/** Give up on a spare that has not answered get_state after this long. */
+const WARM_BOOT_TIMEOUT_MS = 120_000;
 const warmSpares: BridgeHandle[] = [];
 /** Spares that finished booting; adopting one avoids the remaining boot wait. */
 const warmReady = new WeakSet<BridgeHandle>();
+/** Handles whose boot has not settled yet, so `warmBooting` decrements once. */
+const warmBootPending = new WeakSet<BridgeHandle>();
+/** Number of spares currently booting. Boots are serialized around this. */
+let warmBooting = 0;
 /** Spares booted before models/providers changed; refreshed on adoption. */
 const warmStale = new WeakSet<BridgeHandle>();
 let lastOpenCwd: string | null = null;
@@ -476,18 +494,60 @@ function removeWarmSpare(handle: BridgeHandle): boolean {
   return true;
 }
 
-function spawnWarmSpare(): void {
+/** Spares stopped on purpose (retarget/replace/quit), not failed boots. */
+const warmStopped = new WeakSet<BridgeHandle>();
+
+/** Stop a spare without letting the interrupted boot count as a crash. */
+function stopWarmSpare(handle: BridgeHandle): void {
+  warmStopped.add(handle);
+  handle.bridge.stop();
+}
+
+/** Mark a spare as booting so `ensureWarmSpares` never starts a second boot. */
+function beginWarmBoot(handle: BridgeHandle): void {
+  if (warmBootPending.has(handle)) return;
+  warmBootPending.add(handle);
+  warmBooting += 1;
+}
+
+/** Release the boot slot exactly once, even if the process is killed early. */
+function endWarmBoot(handle: BridgeHandle): void {
+  if (!warmBootPending.has(handle)) return;
+  warmBootPending.delete(handle);
+  warmBooting = Math.max(0, warmBooting - 1);
+}
+
+function spawnWarmSpare(cwd: string): void {
   if (!sendToRenderer) return;
-  const cwd = warmCwd();
   const handle = createHandle(cwd, undefined, undefined, "sandbox", sendToRenderer);
   warmSpares.push(handle);
+  beginWarmBoot(handle);
   const startedAt = Date.now();
+  // A boot that never answers must not hold the only boot slot: the pool would
+  // stop warming and every later click would pay a full cold start. Killed
+  // spares are retried by ensureWarmSpares unless they keep failing.
+  let settled = false;
+  const watchdog = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    endWarmBoot(handle);
+    removeWarmSpare(handle);
+    warmFailures += 1;
+    // eslint-disable-next-line no-console
+    console.error(`[pi] warm spare did not boot within ${WARM_BOOT_TIMEOUT_MS} ms; restarting the pool`);
+    stopWarmSpare(handle);
+    ensureWarmSpares();
+  }, WARM_BOOT_TIMEOUT_MS);
   // eslint-disable-next-line no-console
-  console.log(`[pi] warm spare ${warmSpares.length}/${WARM_POOL_SIZE} spawning (cwd=${cwd})`);
+  console.log(`[pi] warm spare ${warmSpares.length}/${WARM_POOL_SIZE} booting (cwd=${cwd})`);
   handle.bridge
     .start()
     .then(() => handle.bridge.getState()) // wait until pi answers: fully booted
     .then(() => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      endWarmBoot(handle);
       warmReady.add(handle);
       if (warmSpares.includes(handle)) {
         // Startup cost is dominated by installed extension packages; log it so a
@@ -497,34 +557,71 @@ function spawnWarmSpare(): void {
           `[pi] warm spare ready in ${Date.now() - startedAt} ms (pool ${warmSpares.length}/${WARM_POOL_SIZE})`,
         );
       }
+      // Only now may the next spare boot: a parallel boot would make this one
+      // (the one the first click adopts) slower. Also runs when the spare was
+      // adopted mid-boot, so the pool refills for the next open.
+      ensureWarmSpares();
     })
     .catch((err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      endWarmBoot(handle);
       removeWarmSpare(handle);
       // A spawned-but-dead process is counted by its onExit handler; only
-      // count spawn-time failures here to avoid double counting.
-      if (!handle.bridge.running) warmFailures++;
+      // count spawn-time failures here to avoid double counting. An intentional
+      // stop (retarget/replace) is not a failure.
+      if (!handle.bridge.running && !warmStopped.has(handle)) warmFailures++;
       // eslint-disable-next-line no-console
       console.error("[pi] warm bridge failed to start:", (err as Error)?.message || String(err));
       ensureWarmSpares();
     });
 }
 
-/** Fill the standby pool. Safe to call anytime and from any handler. */
+/**
+ * Boot one spare for the project in use, if the pool has room. Boots are
+ * strictly serialized (see the pool comment) and a spare that is still booting
+ * keeps its slot until it is usable.
+ */
 export function ensureWarmSpares(): void {
   if (!warmEnabled || !sendToRenderer) return;
   if (warmFailures >= 3) return; // repeated crashes: stop respawning
-  while (warmSpares.length < WARM_POOL_SIZE) spawnWarmSpare();
+  if (warmBooting > 0) return; // one cold boot at a time
+  const cwd = warmCwd();
+  // Full pool that has nothing for the active project: make room by dropping a
+  // spare that already booted for another project. Never drop a boot in flight
+  // (it is exactly the work the next click needs) and never drop the last spare.
+  while (warmSpares.length >= WARM_POOL_SIZE) {
+    let victim: BridgeHandle | undefined;
+    for (const spare of warmSpares) {
+      if (sameDir(spare.bridge.cwd, cwd)) continue;
+      if (!warmReady.has(spare)) continue;
+      victim = spare;
+      break;
+    }
+    if (!victim) return;
+    removeWarmSpare(victim);
+    // eslint-disable-next-line no-console
+    console.log(`[pi] warm spare dropped for "${cwd}" (was "${victim.bridge.cwd}")`);
+    stopWarmSpare(victim);
+  }
+  if (warmSpares.some((spare) => sameDir(spare.bridge.cwd, cwd))) {
+    // This project already has a spare (ready or still booting). Top the pool
+    // up only when nothing else is booting, so boots stay serialized.
+    if (warmSpares.length < WARM_POOL_SIZE) spawnWarmSpare(cwd);
+    return;
+  }
+  spawnWarmSpare(cwd);
 }
 
-/** Drop spares booted for another project so the pool follows the active one. */
+/**
+ * Point the pool at the active project. Nothing is destroyed proactively: a
+ * spare that already booted for another project is only dropped when the pool
+ * actually needs the slot, and a boot in flight is never interrupted.
+ */
 export function retargetWarmSpares(cwd: string): void {
-  for (const spare of [...warmSpares]) {
-    if (sameDir(spare.bridge.cwd, cwd)) continue;
-    removeWarmSpare(spare);
-    // eslint-disable-next-line no-console
-    console.log(`[pi] warm spare dropped (cwd "${spare.bridge.cwd}" != "${cwd}")`);
-    spare.bridge.stop();
-  }
+  lastOpenCwd = cwd;
+  ensureWarmSpares();
 }
 
 /**
@@ -541,7 +638,12 @@ function markWarmSpareStale(): void {
 /** Kill every standby process (runtime changed, quitting, etc.). */
 export function dropWarmBridge(): void {
   const dropped = warmSpares.splice(0, warmSpares.length);
-  for (const spare of dropped) spare.bridge.stop();
+  for (const spare of dropped) {
+    // Release the boot slot before stopping so a replacement pool can start
+    // immediately; the interrupted boot chain then finds nothing pending.
+    endWarmBoot(spare);
+    stopWarmSpare(spare);
+  }
   if (dropped.length) {
     // eslint-disable-next-line no-console
     console.log(`[pi] warm pool dropped (${dropped.length})`);
@@ -615,6 +717,24 @@ function resolvePermission(sessionFile: string | undefined, requested: Permissio
   return "sandbox"; // default
 }
 
+/**
+ * Session path pi will use for a brand-new thread, computed before pi boots.
+ *
+ * pi generates this path itself when it creates a session, but that only happens
+ * after the whole boot (extension packages included) has finished. Pre-computing
+ * the same path lets a thread be addressed, persisted and prompted while pi is
+ * still loading extensions: pi keeps an explicit `--session` path verbatim and
+ * only writes the file on the first message, so an opened-but-unused thread
+ * never leaves an empty session behind.
+ *
+ * Layout mirrors pi's `SessionManager` (agent/sessions/--<encoded cwd>--/).
+ */
+function preassignedSessionFile(cwd: string): string {
+  const dir = join(getSessionsDir(), `--${resolve(cwd).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return join(dir, `${stamp}_${randomUUID()}.jsonl`);
+}
+
 export function stopAllBridges(): void {
   warmEnabled = false; // no respawns while shutting down
   for (const h of bridges.values()) h.bridge.stop();
@@ -637,6 +757,11 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   sendToRenderer = send;
   systemNotifications = createSystemNotificationCenter(getWin);
   warmEnabled = true;
+  // Start the standby boot as soon as the main process is ready instead of
+  // waiting for the renderer to load projects and call app:prewarm. That head
+  // start is several seconds (window + config + project scan) and it is exactly
+  // the window in which a first "new task" click used to wait out a cold boot.
+  setTimeout(() => ensureWarmSpares(), 0);
   // ---- remote companion backend -----------------------------------------
   // The remote surface is deliberately built beside the existing renderer IPC
   // rather than exposing renderer channels to the network. It receives only
@@ -1814,13 +1939,13 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   });
 
   // Pre-warm the standby pool for the project the user is looking at, so a
-  // subsequent "new task" adopts an already-booted process (~0.9s) instead of
-  // cold-starting (~5-7s). Re-targets spares when the active project changes.
+  // subsequent "new task" adopts an already-booted process (~1.3s) instead of
+  // cold-starting (8-13s). Retargeting follows the active project but never
+  // interrupts a boot that is already in flight.
   ipcMain.handle("app:prewarm", (_e, cwd: string) => {
     if (!cwd || typeof cwd !== "string") return { ok: false };
     lastOpenCwd = cwd;
     retargetWarmSpares(cwd);
-    ensureWarmSpares();
     return { ok: true };
   });
 
@@ -1996,30 +2121,79 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     };
   });
 
+  /**
+   * Hydrate a thread that was handed to the renderer before pi finished
+   * booting. The core answers only after every extension package is loaded, so
+   * this is where the model list / commands / thinking levels become known;
+   * `thread:open` already returned the addressable session path.
+   */
+  const finishThreadOpen = async (
+    handle: BridgeHandle,
+    threadId: string,
+    permission: PermissionLevel,
+    startedAt: number,
+    path: "warm" | "booting-spare" | "cold",
+  ): Promise<void> => {
+    try {
+      const state: any = await handle.bridge.getState();
+      const finalId: string = state.sessionFile || threadId;
+      if (finalId !== handle.getId()) handle.setId(finalId);
+      const gathered = await gatherThread(handle.bridge, finalId, permission);
+      // The thread may have been closed while its extensions were loading.
+      if (bridges.get(handle.getId()) !== handle) return;
+      send("pi:thread-ready", {
+        threadId: finalId,
+        previousId: threadId,
+        snapshot: {
+          ...gathered,
+          // The renderer owns the transcript; never replace it with an empty
+          // snapshot (a prompt may already be streaming).
+          messages: [],
+          branchMessages: [],
+          sessionName: null,
+          isStreaming: false,
+          isNewSession: true,
+        },
+      });
+      // eslint-disable-next-line no-console
+      console.log(
+        `[pi] thread:open ${path} ready in ${Date.now() - startedAt} ms (core + extensions)`,
+      );
+    } catch (error: any) {
+      // eslint-disable-next-line no-console
+      console.error("[pi] thread:open hydration failed:", error?.message || String(error));
+      // A closed thread has already been unmounted; do not raise a toast for it.
+      if (bridges.get(handle.getId()) === handle) {
+        send("pi:error", { threadId, message: error?.message || String(error) });
+      }
+    }
+  };
+
   ipcMain.handle("thread:open", async (_e, args: { cwd: string; sessionFile?: string; name?: string; permission?: PermissionLevel }) => {
     const { cwd, sessionFile, name } = args;
     if (sessionFile && bridges.has(sessionFile)) {
       const existing = bridges.get(sessionFile)!;
       return gatherThread(existing.bridge, sessionFile, existing.permission);
     }
+    const openStartedAt = Date.now();
     lastOpenCwd = cwd;
     if ((getConfig().lastThreadCwd || "") !== cwd) updateConfig({ lastThreadCwd: cwd });
     const permission = resolvePermission(sessionFile, args.permission);
+    // A brand-new thread gets its session path up front (see
+    // preassignedSessionFile) so the caller can start typing while pi is still
+    // loading extensions. Nothing below needs to wait for that load.
+    const isNewThread = !sessionFile;
+    const targetSession = isNewThread ? preassignedSessionFile(cwd) : (sessionFile as string);
     let handle: BridgeHandle | null = null;
     let adopted = false;
+    let adoptedReady = false;
     const spareAtEntry = warmSpares.length > 0;
     // Adopt a booted spare: switching sessions on a warm process measures
-    // ~0.9s vs ~5-7s cold. Prefer one that already answered get_state so the
-    // open never waits on a remaining boot. A spare booted for another project
-    // is dropped; the pool refills for the project actually in use.
+    // ~1.3s vs a full 8-13s cold boot. Prefer one that already answered
+    // get_state so the open never waits on a remaining boot.
     if (!name) {
       for (const spare of [...warmSpares]) {
         if (!spare.bridge.running) removeWarmSpare(spare);
-      }
-      if (warmSpares.some((spare) => !sameDir(spare.bridge.cwd, cwd))) {
-        // eslint-disable-next-line no-console
-        console.log(`[pi] thread:open retargeting warm pool to "${cwd}"`);
-        retargetWarmSpares(cwd);
       }
       const candidates = warmSpares.filter((spare) => spare.bridge.running && sameDir(spare.bridge.cwd, cwd));
       const chosen = candidates.find((spare) => warmReady.has(spare)) || candidates[0];
@@ -2027,14 +2201,28 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
         handle = chosen;
         removeWarmSpare(chosen);
         adopted = true;
+        adoptedReady = warmReady.has(chosen);
         warmFailures = 0;
         handle.permission = permission;
         writeGateMode(handle.gateModeFile, permission);
         // eslint-disable-next-line no-console
         console.log(
-          `[pi] thread:open adopting ${warmReady.has(chosen) ? "booted" : "booting"} warm spare` +
+          `[pi] thread:open adopting ${adoptedReady ? "booted" : "booting"} warm spare` +
             (sessionFile ? " (switch_session)" : " (fresh)"),
         );
+      } else {
+        // No spare can serve this open. Spares for another project are unusable
+        // for this cwd, and leaving them running would compete with the process
+        // the user is now waiting on. Stop them; the pool refills once this
+        // thread is up. A spare is never evicted for a project that is only
+        // being prewarmed — this is the one place that pay-off is real.
+        for (const spare of [...warmSpares]) {
+          removeWarmSpare(spare);
+          endWarmBoot(spare);
+          // eslint-disable-next-line no-console
+          console.log(`[pi] thread:open stopping unusable spare (cwd "${spare.bridge.cwd}")`);
+          stopWarmSpare(spare);
+        }
       }
     }
     if (!handle) {
@@ -2042,35 +2230,82 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
         // eslint-disable-next-line no-console
         console.log("[pi] thread:open cold start (no spare available yet)");
       }
-      handle = createHandle(cwd, sessionFile, name, permission, send);
+      // New threads spawn directly on their session path; resumed threads keep
+      // loading their existing file.
+      handle = createHandle(cwd, targetSession, name, permission, send);
+    } else if (adopted) {
+      // The spare booted with an anonymous session; address it by the path the
+      // caller already knows so no id remap is needed when pi catches up.
+      handle.setId(targetSession);
     }
     bridges.set(handle.getId(), handle);
+    const path = adoptedReady ? "warm" : adopted ? "booting-spare" : "cold";
     try {
       await handle.bridge.start(); // no-op for the already-running spare
-      if (adopted) {
-        if (warmStale.has(handle)) {
-          // Model/provider settings changed while the spare idled. The registry
-          // refresh costs tens of milliseconds; rebuilding the process would
-          // cost a full cold boot on the next thread.
-          warmStale.delete(handle);
-          const refreshAt = Date.now();
-          try {
-            await handle.bridge.prompt("/pi-studio-refresh-models");
+      if (adopted && warmStale.has(handle)) {
+        // Model/provider settings changed while the spare idled. The registry
+        // refresh costs tens of milliseconds; rebuilding the process would
+        // cost a full cold boot on the next thread. Queued on the RPC pipe so
+        // it is applied before the session switch and the user's first prompt,
+        // but never awaited: a spare that is still booting must not block the
+        // open.
+        warmStale.delete(handle);
+        const refreshAt = Date.now();
+        void handle.bridge
+          .prompt("/pi-studio-refresh-models")
+          .then(() => {
             // eslint-disable-next-line no-console
             console.log(`[pi] warm spare reloaded its model registry in ${Date.now() - refreshAt} ms`);
-          } catch (error: any) {
+          })
+          .catch((error: any) => {
             // The spare stays usable with its boot-time catalog.
             // eslint-disable-next-line no-console
             console.error("[pi] warm spare model refresh failed:", error?.message || String(error));
-          }
+          });
+      }
+      if (isNewThread) {
+        if (adopted) {
+          // Queued on the RPC pipe and applied as soon as pi boots, in order
+          // before the user's first prompt. Deliberately not awaited: waiting
+          // here is exactly the "new task takes 30s" the user sees.
+          void handle.bridge.switchSession(targetSession).catch((error: any) => {
+            // eslint-disable-next-line no-console
+            console.error("[pi] thread:open session switch failed:", error?.message || String(error));
+            send("pi:error", { threadId: targetSession, message: error?.message || String(error) });
+          });
         }
-        if (sessionFile) {
-          await handle.bridge.switchSession(sessionFile);
-        } else {
-          // A warm spare may have opened pi's current session while it was
-          // idle. A new task must never inherit that session or its name.
-          await handle.bridge.newSession();
+        // Persist the chosen level now: the session path is already final.
+        const perms = getConfig().threadPermissions;
+        if (perms[targetSession] !== permission) {
+          updateConfig({ threadPermissions: { ...perms, [targetSession]: permission } });
         }
+        // Extensions are still loading inside pi; hydrate models/commands/
+        // thinking levels once the core answers.
+        void finishThreadOpen(handle, targetSession, permission, openStartedAt, path);
+        return {
+          threadId: targetSession,
+          sessionFile: targetSession,
+          cwd,
+          sessionName: null,
+          model: null,
+          models: [],
+          thinkingLevel: "off",
+          isStreaming: false,
+          messages: [],
+          branchMessages: [],
+          commands: [],
+          permission,
+          isNewSession: true,
+          connected: true,
+          // false until extensions are loaded; the UI keeps a quiet indicator
+          // and sending is already allowed.
+          ready: false,
+        };
+      }
+      // Resumed thread: the caller already has the transcript from disk, so the
+      // extra RPC round trip costs nothing user-visible.
+      if (adopted) {
+        await handle.bridge.switchSession(sessionFile as string);
       }
       const state: any = await handle.bridge.getState();
       const finalId = state.sessionFile || handle.getId();
@@ -2081,20 +2316,6 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
         if (perms[state.sessionFile] !== permission) updateConfig({ threadPermissions: { ...perms, [state.sessionFile]: permission } });
       }
       const gathered = await gatherThread(handle.bridge, finalId, permission);
-      if (!sessionFile) {
-        // Opening without a session file is the explicit "New thread" flow.
-        // The process may have been a warm spare whose previous session name
-        // is still visible in its state; never let that metadata or transcript
-        // cross the new-thread boundary.
-        return {
-          ...gathered,
-          sessionName: null,
-          messages: [],
-          branchMessages: [],
-          isStreaming: false,
-          isNewSession: true,
-        };
-      }
       return gathered;
     } catch (e) {
       bridges.delete(handle.getId());
@@ -2102,7 +2323,14 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
       handle.bridge.stop();
       throw e;
     } finally {
-      ensureWarmSpares(); // keep exactly one spare booted for the next open
+      // Attribution for slow-open reports: which path was taken and how long it
+      // really took, next to the boot cost of the spares that were available.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[pi] thread:open ${path} handed over in ${Date.now() - openStartedAt} ms` +
+          ` (pool=${warmSpares.length}/${WARM_POOL_SIZE}, booting=${warmBooting})`,
+      );
+      ensureWarmSpares(); // keep the standby pool filled for the next open
     }
   });
 
@@ -2131,7 +2359,8 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     for (const spare of [...warmSpares]) {
       if (sameSessionFile(spare.getId(), target)) {
         removeWarmSpare(spare);
-        spare.bridge.stop();
+        endWarmBoot(spare);
+        stopWarmSpare(spare);
       }
     }
 

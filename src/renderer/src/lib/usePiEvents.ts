@@ -7,12 +7,14 @@ import { useStore } from "../store";
  */
 export function usePiEvents() {
   const handleEvent = useStore((s) => s.handleEvent);
+  const handleThreadReady = useStore((s) => s.handleThreadReady);
   const handleExtUi = useStore((s) => s.handleExtUi);
   const handleExit = useStore((s) => s.handleExit);
   const handleError = useStore((s) => s.handleError);
 
   useEffect(() => {
     const u1 = window.pi.on.event((p) => handleEvent(p.threadId, p.event));
+    const u8 = window.pi.on.threadReady((p) => handleThreadReady(p));
     const u2 = window.pi.on.extui((p) => handleExtUi(p.threadId, p.request));
     const u3 = window.pi.on.exit((p) => handleExit(p.threadId, p));
     const u4 = window.pi.on.error((p) => handleError(p.threadId, p.message));
@@ -48,6 +50,7 @@ export function usePiEvents() {
     });
     return () => {
       u1();
+      u8();
       u2();
       u3();
       u4();

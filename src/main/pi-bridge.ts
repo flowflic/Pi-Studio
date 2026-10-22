@@ -355,7 +355,8 @@ export class PiBridge {
   private readonly pending = new Map<string, PendingRequest>();
   private reqCounter = 0;
   private stderrBuf = "";
-  private started = false;
+  /** Shared start promise so every caller waits for the same spawn. */
+  private startPromise: Promise<void> | null = null;
   private exited = false;
   /** True once stop() was called; the resulting exit is intentional, not a crash. */
   private stopRequested = false;
@@ -364,10 +365,26 @@ export class PiBridge {
     this.opts = opts;
   }
 
-  async start(): Promise<void> {
-    if (this.started) return;
-    this.started = true;
+  /**
+   * Spawn the process (once). Resolves only after the child actually exists, so
+   * a caller that adopts a process which is still booting can safely queue RPC
+   * commands immediately — an early `started` flag used to let a second caller
+   * return before `spawn` ran, and its first command then failed with
+   * "pi bridge is not running".
+   */
+  start(): Promise<void> {
+    if (!this.startPromise) this.startPromise = this.doStart();
+    return this.startPromise;
+  }
+
+  private async doStart(): Promise<void> {
     const rt = await resolvePiRuntime(this.opts.piCliPath);
+    // stop() may have been called while the runtime was still resolving (e.g.
+    // the pool was dropped during first-launch runtime extraction).
+    if (this.stopRequested) {
+      this.exited = true;
+      return;
+    }
     const args = ["--mode", "rpc"];
     if (this.opts.name) args.push("--name", this.opts.name);
     if (this.opts.sessionFile) args.push("--session", this.opts.sessionFile);
