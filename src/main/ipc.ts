@@ -98,6 +98,9 @@ interface BridgeHandle {
   permission: PermissionLevel;
   gateModeFile: string;
   replyStartedAt?: number;
+  /** Resolves once the thread's session switch/model refresh is settled. pi
+   *  answers RPC lines concurrently, so prompts must not race the setup. */
+  pendingSetup?: Promise<void>;
 }
 
 const bridges = new Map<string, BridgeHandle>();
@@ -733,6 +736,15 @@ function preassignedSessionFile(cwd: string): string {
   const dir = join(getSessionsDir(), `--${resolve(cwd).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   return join(dir, `${stamp}_${randomUUID()}.jsonl`);
+}
+
+/**
+ * pi answers RPC lines concurrently (`void handleInputLine(line)`), so a prompt
+ * written while the thread's session switch is still in flight would be applied
+ * to the previous session. Prompt-family commands wait for the setup to settle.
+ */
+async function awaitThreadSetup(handle: BridgeHandle): Promise<void> {
+  if (handle.pendingSetup) await handle.pendingSetup;
 }
 
 export function stopAllBridges(): void {
@@ -2133,24 +2145,51 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     permission: PermissionLevel,
     startedAt: number,
     path: "warm" | "booting-spare" | "cold",
+    setup?: Promise<unknown>,
   ): Promise<void> => {
     try {
+      // pi handles RPC lines concurrently (`void handleInputLine(line)`), so the
+      // session switch must be *awaited* before any state read: otherwise
+      // get_state can answer for the spare's own boot session and the thread
+      // ends up bound to the wrong file (or the concurrent reads hit a
+      // half-replaced session and this never reports ready).
+      if (setup) await setup;
       const state: any = await handle.bridge.getState();
       const finalId: string = state.sessionFile || threadId;
+      if (finalId !== threadId) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[pi] thread:open session mismatch: requested=${threadId} pi=${finalId} (re-keying thread)`,
+        );
+      }
       if (finalId !== handle.getId()) handle.setId(finalId);
-      const gathered = await gatherThread(handle.bridge, finalId, permission);
+      // Only the metadata that becomes available after extension loading is
+      // needed here; the transcript belongs to the renderer. Read it
+      // tolerantly so one slow/unsupported RPC cannot keep the thread stuck in
+      // "loading extensions".
+      const [modelsRes, commandsRes]: any[] = await Promise.all([
+        handle.bridge.getAvailableModels().catch(() => ({ models: [] })),
+        handle.bridge.getCommands().catch(() => ({ commands: [] })),
+      ]);
       // The thread may have been closed while its extensions were loading.
       if (bridges.get(handle.getId()) !== handle) return;
       send("pi:thread-ready", {
         threadId: finalId,
         previousId: threadId,
         snapshot: {
-          ...gathered,
-          // The renderer owns the transcript; never replace it with an empty
+          threadId: finalId,
+          sessionFile: finalId,
+          cwd: handle.bridge.cwd,
+          sessionName: null,
+          model: state.model ?? null,
+          models: modelsRes?.models ?? [],
+          thinkingLevel: state.thinkingLevel ?? "off",
+          commands: synchronizedCommands(commandsRes?.commands, handle.bridge.cwd),
+          permission,
+          // The renderer owns the transcript: never replace it with an empty
           // snapshot (a prompt may already be streaming).
           messages: [],
           branchMessages: [],
-          sessionName: null,
           isStreaming: false,
           isNewSession: true,
         },
@@ -2264,24 +2303,27 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
           });
       }
       if (isNewThread) {
-        if (adopted) {
-          // Queued on the RPC pipe and applied as soon as pi boots, in order
-          // before the user's first prompt. Deliberately not awaited: waiting
-          // here is exactly the "new task takes 30s" the user sees.
-          void handle.bridge.switchSession(targetSession).catch((error: any) => {
-            // eslint-disable-next-line no-console
-            console.error("[pi] thread:open session switch failed:", error?.message || String(error));
-            send("pi:error", { threadId: targetSession, message: error?.message || String(error) });
-          });
-        }
+        // Everything that touches the session must finish before the first
+        // state read or prompt. pi runs RPC lines concurrently, so a switch that
+        // is merely written to the pipe can still be in flight while get_state
+        // or a prompt is answered against the old session.
+        const setup: Promise<unknown> = adopted
+          ? handle.bridge.switchSession(targetSession)
+          : Promise.resolve();
+        // Prompt handlers wait for this (never rejects) so a message typed
+        // immediately after opening cannot land in the spare's previous session.
+        handle.pendingSetup = setup.then(
+          () => undefined,
+          () => undefined,
+        );
         // Persist the chosen level now: the session path is already final.
         const perms = getConfig().threadPermissions;
         if (perms[targetSession] !== permission) {
           updateConfig({ threadPermissions: { ...perms, [targetSession]: permission } });
         }
         // Extensions are still loading inside pi; hydrate models/commands/
-        // thinking levels once the core answers.
-        void finishThreadOpen(handle, targetSession, permission, openStartedAt, path);
+        // thinking levels once the core answers (after the setup completes).
+        void finishThreadOpen(handle, targetSession, permission, openStartedAt, path, setup);
         return {
           threadId: targetSession,
           sessionFile: targetSession,
@@ -2399,6 +2441,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   ipcMain.handle("thread:prompt", async (_e, args: { threadId: string; text: string; images?: unknown[]; attachments?: Attachment[] }) => {
     const h = bridges.get(args.threadId);
     if (!h) throw new Error("Thread not open: " + args.threadId);
+    await awaitThreadSetup(h);
     const { text, images } = processAttachments(args.attachments, args.text || "");
     const merged = [...(args.images || []), ...images];
     const response = await h.bridge.prompt(text, merged.length ? merged : undefined);
@@ -2408,6 +2451,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   ipcMain.handle("thread:steer", async (_e, args: { threadId: string; text: string; images?: unknown[]; attachments?: Attachment[] }) => {
     const h = bridges.get(args.threadId);
     if (!h) throw new Error("Thread not open: " + args.threadId);
+    await awaitThreadSetup(h);
     const { text, images } = processAttachments(args.attachments, args.text || "");
     const merged = [...(args.images || []), ...images];
     await h.bridge.steer(text, merged.length ? merged : undefined);
@@ -2417,6 +2461,7 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   ipcMain.handle("thread:followUp", async (_e, args: { threadId: string; text: string; images?: unknown[]; attachments?: Attachment[] }) => {
     const h = bridges.get(args.threadId);
     if (!h) throw new Error("Thread not open: " + args.threadId);
+    await awaitThreadSetup(h);
     const { text, images } = processAttachments(args.attachments, args.text || "");
     const merged = [...(args.images || []), ...images];
     await h.bridge.followUp(text, merged.length ? merged : undefined);
@@ -2425,7 +2470,10 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
 
   ipcMain.handle("thread:abort", async (_e, threadId: string) => {
     const h = bridges.get(threadId);
-    if (h) await h.bridge.abort();
+    if (h) {
+      await awaitThreadSetup(h);
+      await h.bridge.abort();
+    }
     return true;
   });
 
