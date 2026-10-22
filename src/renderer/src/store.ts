@@ -739,7 +739,7 @@ function threadFromResponse(res: any, fallback: ThreadState, pendingEditorText?:
     model: res.model,
     models: res.models || fallback.models || [],
     thinking: res.thinkingLevel || fallback.thinking || "off",
-    levels: fallback.levels || ["off"],
+    levels: res.levels?.length ? res.levels : fallback.levels || ["off"],
     commands: res.commands || [],
     connected: true,
     ready: res.ready !== false,
@@ -766,9 +766,11 @@ function withReadySnapshot(base: ThreadState, snapshot: any): ThreadState {
     ...base,
     sessionFile: snapshot.sessionFile || base.sessionFile,
     sessionName: base.isNewSession ? base.sessionName : snapshot.sessionName ?? base.sessionName,
-    model: snapshot.model ?? base.model,
+    // A choice made while pi was loading extensions wins over the boot-time
+    // default reported by get_state.
+    model: base.modelPicked ? base.model : snapshot.model ?? base.model,
     models: snapshot.models?.length ? snapshot.models : base.models,
-    thinking: snapshot.thinkingLevel || base.thinking,
+    thinking: base.thinkingPicked ? base.thinking : snapshot.thinkingLevel || base.thinking,
     commands: snapshot.commands?.length ? snapshot.commands : base.commands,
     permission: snapshot.permission || base.permission,
     connected: true,
@@ -1944,6 +1946,24 @@ export const useStore = create<PiStore>()((set, get) => ({
 
   setModel: async (id, provider, modelId) => {
     if (!(await get().ensureConnected(id))) return;
+    // Apply the choice immediately: pi may still be loading extensions, and
+    // waiting for the RPC would leave the picker visibly stuck for seconds.
+    set((s) => {
+      const t = s.threads[id];
+      if (!t) return s;
+      const picked = (t.models || []).find((m) => m.provider === provider && m.id === modelId);
+      return {
+        threads: {
+          ...s.threads,
+          [id]: {
+            ...t,
+            model: picked || { provider, id: modelId, name: modelId },
+            modelPicked: true,
+            levels: picked?.thinkingLevelMap ? ["off", ...Object.keys(picked.thinkingLevelMap).filter((l) => l !== "off" && picked.thinkingLevelMap?.[l] !== null)] : t.levels,
+          },
+        },
+      };
+    });
     try {
       const res: any = await window.pi.thread.setModel({ threadId: id, provider, modelId });
       const nextModel = res?.model || res || { provider, id: modelId };
@@ -1955,6 +1975,7 @@ export const useStore = create<PiStore>()((set, get) => ({
                 [id]: {
                   ...s.threads[id],
                   model: nextModel,
+                  modelPicked: true,
                   ...(typeof res?.thinkingLevel === "string" ? { thinking: res.thinkingLevel } : {}),
                 },
               },
@@ -1972,10 +1993,12 @@ export const useStore = create<PiStore>()((set, get) => ({
 
   setThinking: async (id, level) => {
     if (!(await get().ensureConnected(id))) return;
+    // Optimistic like setModel: the choice must not wait for extension loading.
+    set((s) => (s.threads[id] ? { threads: { ...s.threads, [id]: { ...s.threads[id], thinking: level, thinkingPicked: true } } } : s));
     try {
       const res: any = await window.pi.thread.setThinking({ threadId: id, level });
       const effectiveLevel = typeof res?.thinkingLevel === "string" ? res.thinkingLevel : level;
-      set((s) => (s.threads[id] ? { threads: { ...s.threads, [id]: { ...s.threads[id], thinking: effectiveLevel } } } : s));
+      set((s) => (s.threads[id] ? { threads: { ...s.threads, [id]: { ...s.threads[id], thinking: effectiveLevel, thinkingPicked: true } } } : s));
     } catch (e: any) {
       get().pushToast("error", e?.message || "set thinking failed");
     }

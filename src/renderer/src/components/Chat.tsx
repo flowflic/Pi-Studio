@@ -14,37 +14,29 @@ import { Sidebar, PanelRight, Copy, ThumbUp, ThumbDown, Refresh, Edit, Folder, F
 import appIconUrl from "../../../../resources/icon.png";
 
 /**
- * "Starting Pi · 3s" while a thread's pi process boots, then "Loading
- * extensions · 3s" once the core is up but its extension packages are still
- * loading. The second phase never blocks typing or sending: prompts are queued
- * on the RPC pipe and run as soon as the extensions are ready.
+ * "Starting Pi · 3s" while a thread's pi process has not answered yet. Extension
+ * loading is deliberately NOT surfaced here: the thread is already usable
+ * (model picker, composer, queued prompts), so a multi-second badge only made a
+ * new task look broken.
  */
-function ConnectingBadge({ language, phase = "core" }: { language: string; phase?: "core" | "extensions" }) {
+function ConnectingBadge({ language }: { language: string }) {
   const [seconds, setSeconds] = useState(0);
   useEffect(() => {
     const started = Date.now();
     const timer = window.setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 500);
     return () => window.clearInterval(timer);
   }, []);
-  const starting = phase === "core";
   return (
     <span
       className="chat-connecting"
       role="status"
       title={
-        starting
-          ? language === "zh"
-            ? "Pi 内核启动中；历史已可浏览，发送的消息会自动等待它就绪"
-            : "Pi core is starting; history stays browsable and sending waits for it automatically"
-          : language === "zh"
-            ? "内核已就绪，扩展与工具正在后台加载；现在就可以输入和发送"
-            : "Core is ready; extensions and tools are loading in the background. You can type and send now"
+        language === "zh"
+          ? "Pi 内核启动中；历史已可浏览，发送的消息会自动等待它就绪"
+          : "Pi core is starting; history stays browsable and sending waits for it automatically"
       }
     >
-      <span className="spinner" />{" "}
-      {starting
-        ? language === "zh" ? "Pi 内核启动中" : "Starting Pi"
-        : language === "zh" ? "扩展加载中" : "Loading extensions"}
+      <span className="spinner" /> {language === "zh" ? "Pi 内核启动中" : "Starting Pi"}
       {seconds > 0 ? ` · ${seconds}s` : "…"}
     </span>
   );
@@ -266,9 +258,7 @@ export function Chat() {
             </>
           )}
         </div>
-        {(!thread.connected || thread.ready === false) && (
-          <ConnectingBadge language={language} phase={thread.connected ? "extensions" : "core"} />
-        )}
+        {!thread.connected && <ConnectingBadge language={language} />}
         <button className="iconbtn" title="重命名" onClick={startRename}>
           <Edit size={14} />
         </button>

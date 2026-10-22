@@ -101,6 +101,9 @@ interface BridgeHandle {
   /** Resolves once the thread's session switch/model refresh is settled. pi
    *  answers RPC lines concurrently, so prompts must not race the setup. */
   pendingSetup?: Promise<void>;
+  /** Serializes write RPCs (model change, prompt, steer, ...) per thread so a
+   *  choice made while extensions load is applied before the first prompt. */
+  chain?: Promise<void>;
 }
 
 const bridges = new Map<string, BridgeHandle>();
@@ -746,6 +749,63 @@ function preassignedSessionFile(cwd: string): string {
 async function awaitThreadSetup(handle: BridgeHandle): Promise<void> {
   if (handle.pendingSetup) await handle.pendingSetup;
 }
+
+/**
+ * Run a write RPC in call order for one thread. Without this a model chosen
+ * while pi is still loading extensions can be overtaken by the first prompt
+ * (pi handles both lines concurrently), and the prompt would run on the old
+ * model.
+ */
+function enqueueBridge<T>(handle: BridgeHandle, task: () => Promise<T>): Promise<T> {
+  const previous = handle.chain ?? Promise.resolve();
+  const run = previous.then(task, task);
+  handle.chain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+/**
+ * Model list the composer can show before pi finished loading extensions.
+ * Built from `models.json` (the user's configured selection, the same source the
+ * settings UI edits), so a new task is usable immediately instead of waiting
+ * seconds for pi's registry. The authoritative list replaces it on
+ * `pi:thread-ready`.
+ */
+function provisionalModels(): any[] {
+  const file = readModelsFile();
+  const out: any[] = [];
+  for (const [provider, definition] of Object.entries(file.providers || {})) {
+    const models = Array.isArray(definition?.models) ? definition.models : [];
+    for (const model of models) {
+      if (!model || typeof model.id !== "string" || !model.id) continue;
+      out.push({
+        provider,
+        id: model.id,
+        name: model.name || model.id,
+        api: model.api || definition.api,
+        baseUrl: model.baseUrl || definition.baseUrl,
+        reasoning: model.reasoning === true,
+        input: Array.isArray(model.input) ? model.input : [],
+        contextWindow: model.contextWindow ?? 0,
+        maxTokens: model.maxTokens ?? 0,
+        cost: model.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        thinkingLevelMap: model.thinkingLevelMap,
+      });
+    }
+  }
+  return out;
+}
+
+/** Thinking levels a model advertises, used before pi reports them. */
+function provisionalLevels(model: any): string[] {
+  const map = model?.thinkingLevelMap;
+  if (!map || typeof map !== "object") return ["off"];
+  const levels = Object.keys(map).filter((level) => level !== "off" && map[level] !== null);
+  return levels.length ? ["off", ...levels] : ["off"];
+}
+
 
 export function stopAllBridges(): void {
   warmEnabled = false; // no respawns while shutting down
@@ -2154,6 +2214,10 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
       // ends up bound to the wrong file (or the concurrent reads hit a
       // half-replaced session and this never reports ready).
       if (setup) await setup;
+      // A model/thinking choice made while the thread was warming up must be
+      // applied before the snapshot is read, otherwise the ready event would
+      // report the boot-time default and the picker would jump back.
+      if (handle.chain) await handle.chain;
       const state: any = await handle.bridge.getState();
       const finalId: string = state.sessionFile || threadId;
       if (finalId !== threadId) {
@@ -2324,18 +2388,34 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
         // Extensions are still loading inside pi; hydrate models/commands/
         // thinking levels once the core answers (after the setup completes).
         void finishThreadOpen(handle, targetSession, permission, openStartedAt, path, setup);
+        // Give the composer a usable model list right away: pi's registry only
+        // answers after every extension package is loaded (seconds), and an empty
+        // picker made a new task look broken. models.json is the same data the
+        // settings UI edits, and the ready event replaces this with pi's list.
+        const provisional = provisionalModels();
+        const defaults = readThinking();
+        const defaultModel =
+          provisional.find((model) => model.provider === defaults.defaultProvider && model.id === defaults.defaultModel) ||
+          provisional.find((model) => model.provider === defaults.defaultProvider) ||
+          provisional[0] ||
+          null;
+        // pi clamps an unsupported level to the nearest one the model exposes;
+        // clamp here too so the pill does not visibly jump when hydration lands.
+        const levels = provisionalLevels(defaultModel);
+        const wantedLevel = defaults.defaultThinkingLevel || "off";
         return {
           threadId: targetSession,
           sessionFile: targetSession,
           cwd,
           sessionName: null,
-          model: null,
-          models: [],
-          thinkingLevel: "off",
+          model: defaultModel,
+          models: provisional,
+          thinkingLevel: levels.includes(wantedLevel) ? wantedLevel : levels[levels.length - 1] || "off",
+          levels,
           isStreaming: false,
           messages: [],
           branchMessages: [],
-          commands: [],
+          commands: getSkillCommands(cwd),
           permission,
           isNewSession: true,
           connected: true,
@@ -2441,30 +2521,36 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   ipcMain.handle("thread:prompt", async (_e, args: { threadId: string; text: string; images?: unknown[]; attachments?: Attachment[] }) => {
     const h = bridges.get(args.threadId);
     if (!h) throw new Error("Thread not open: " + args.threadId);
-    await awaitThreadSetup(h);
     const { text, images } = processAttachments(args.attachments, args.text || "");
     const merged = [...(args.images || []), ...images];
-    const response = await h.bridge.prompt(text, merged.length ? merged : undefined);
+    const response = await enqueueBridge(h, async () => {
+      await awaitThreadSetup(h);
+      return h.bridge.prompt(text, merged.length ? merged : undefined);
+    });
     return { ok: true, ...(response && typeof response === "object" ? response : {}) };
   });
 
   ipcMain.handle("thread:steer", async (_e, args: { threadId: string; text: string; images?: unknown[]; attachments?: Attachment[] }) => {
     const h = bridges.get(args.threadId);
     if (!h) throw new Error("Thread not open: " + args.threadId);
-    await awaitThreadSetup(h);
     const { text, images } = processAttachments(args.attachments, args.text || "");
     const merged = [...(args.images || []), ...images];
-    await h.bridge.steer(text, merged.length ? merged : undefined);
+    await enqueueBridge(h, async () => {
+      await awaitThreadSetup(h);
+      return h.bridge.steer(text, merged.length ? merged : undefined);
+    });
     return { ok: true };
   });
 
   ipcMain.handle("thread:followUp", async (_e, args: { threadId: string; text: string; images?: unknown[]; attachments?: Attachment[] }) => {
     const h = bridges.get(args.threadId);
     if (!h) throw new Error("Thread not open: " + args.threadId);
-    await awaitThreadSetup(h);
     const { text, images } = processAttachments(args.attachments, args.text || "");
     const merged = [...(args.images || []), ...images];
-    await h.bridge.followUp(text, merged.length ? merged : undefined);
+    await enqueueBridge(h, async () => {
+      await awaitThreadSetup(h);
+      return h.bridge.followUp(text, merged.length ? merged : undefined);
+    });
     return { ok: true };
   });
 
@@ -2480,7 +2566,10 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   ipcMain.handle("thread:setModel", async (_e, args: { threadId: string; provider: string; modelId: string }) => {
     const h = bridges.get(args.threadId);
     if (!h) throw new Error("Thread not open");
-    const model = await h.bridge.setModel(args.provider, args.modelId);
+    const model = await enqueueBridge(h, async () => {
+      await awaitThreadSetup(h);
+      return h.bridge.setModel(args.provider, args.modelId);
+    });
     // Pi clamps the current thinking level when the selected model exposes a
     // narrower thinkingLevelMap. Return the effective value so the renderer's
     // badge stays in sync with the live session instead of showing stale max.
@@ -2503,7 +2592,10 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
   ipcMain.handle("thread:setThinking", async (_e, args: { threadId: string; level: string }) => {
     const h = bridges.get(args.threadId);
     if (!h) throw new Error("Thread not open");
-    await h.bridge.setThinkingLevel(args.level);
+    await enqueueBridge(h, async () => {
+      await awaitThreadSetup(h);
+      return h.bridge.setThinkingLevel(args.level);
+    });
     const state: any = await h.bridge.getState();
     return { thinkingLevel: state?.thinkingLevel ?? args.level };
   });

@@ -209,6 +209,10 @@ export interface ThreadState {
    *  core is already running and prompts are queued, so this only drives a
    *  quiet indicator — it never blocks the composer. */
   ready?: boolean;
+  /** Set once the user picked a model/thinking level, so the hydration that
+   *  arrives when extensions finish cannot revert that choice. */
+  modelPicked?: boolean;
+  thinkingPicked?: boolean;
   isStreaming: boolean;
   replyStartedAt?: number;
   messages: ViewMessage[];
