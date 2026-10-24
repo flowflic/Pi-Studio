@@ -142,7 +142,8 @@ const api = {
     cancelMcpAction: (requestId: string) => ipcRenderer.invoke("settings:cancelMcpAction", requestId),
     onMcpOutput: (cb: (payload: { requestId: string; text: string }) => void) => on("settings:mcpOutput", cb),
     getModels: () => ipcRenderer.invoke("settings:getModels"),
-    discoverModels: (provider: Record<string, unknown>) => ipcRenderer.invoke("settings:discoverModels", provider),
+    discoverModels: (provider: Record<string, unknown>, providerId?: string) =>
+      ipcRenderer.invoke("settings:discoverModels", provider, providerId),
     testModel: (args: { providerId: string; provider: Record<string, unknown>; modelId: string }) =>
       ipcRenderer.invoke("settings:testModel", args),
     getProviderCredentials: (requests: { provider: string; envVar?: string }[]) =>

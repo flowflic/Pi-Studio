@@ -68,6 +68,9 @@ jobs:
       - name: Verify Pi core updater
         run: npm run test:core-updater
 
+      - name: Verify built-in model catalog discovery
+        run: npm run test:model-discovery
+
       - name: Verify desktop MCP and Codemode settings
         run: npm run test:mcp-desktop
 

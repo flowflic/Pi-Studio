@@ -30,6 +30,35 @@ export function getAuthPath(): string {
   return join(getAgentDir(), "auth.json");
 }
 
+/** Pi caches the remote provider catalog (id, name, api, baseUrl, limits, ...)
+ *  in `models-store.json` next to models.json. */
+function getModelStorePath(): string {
+  return join(getAgentDir(), "models-store.json");
+}
+
+/**
+ * Model list Pi already knows for a provider it ships a catalog for. Studio only
+ * stores credentials for those providers (no baseUrl/models), so there is no
+ * endpoint to query — the cached catalog *is* the authoritative list, and
+ * "Fetch models" imports it instead of failing with "API URL is required".
+ */
+export function builtinProviderModels(providerId: string): ModelDef[] {
+  const store = readJson<Record<string, { models?: unknown[] }>>(getModelStorePath());
+  const entry = store?.[providerId];
+  if (!entry || !Array.isArray(entry.models)) return [];
+  const models: ModelDef[] = [];
+  for (const raw of entry.models) {
+    const item = raw as Record<string, unknown> | null;
+    if (!item || typeof item.id !== "string" || !item.id) continue;
+    models.push({
+      ...item,
+      id: item.id,
+      name: typeof item.name === "string" && item.name ? item.name : item.id,
+    } as ModelDef);
+  }
+  return models;
+}
+
 function readJson<T>(file: string): T | null {
   try {
     if (!existsSync(file)) return null;
@@ -322,11 +351,23 @@ function discoveryError(payload: any, status: number): string {
   return typeof message === "string" && message.trim() ? message.trim() : `Model list request failed with HTTP ${status}.`;
 }
 
-/** Query the provider's standard model-list endpoint without saving the draft. */
-export async function discoverProviderModels(provider: ProviderDef): Promise<ModelDiscoveryResult> {
+/** Query the provider's standard model-list endpoint without saving the draft.
+ *  Providers Studio only stores credentials for have no endpoint of their own:
+ *  Pi serves its built-in catalog for them, so the cached catalog is returned. */
+export async function discoverProviderModels(provider: ProviderDef, providerId?: string): Promise<ModelDiscoveryResult> {
   const secrets: string[] = [];
   try {
-    if (!provider.baseUrl?.trim()) throw new Error("API URL is required.");
+    // Providers Studio only stores credentials for have no endpoint of their
+    // own: Pi serves its built-in catalog, so import the models Pi already
+    // knows instead of asking for a URL the user does not have.
+    if (!provider.baseUrl?.trim()) {
+      const builtin = providerId ? builtinProviderModels(providerId) : [];
+      if (builtin.length) return { ok: true, models: builtin, message: "" };
+      throw new Error(
+        "Pi has no cached model catalog for this provider yet. Enter its API URL to fetch models.",
+      );
+    }
+    const baseUrl = provider.baseUrl.trim();
     const apiKey = await resolveProviderValue(provider.apiKey);
     if (apiKey) secrets.push(apiKey);
     const headers = new Headers({ Accept: "application/json" });
@@ -349,7 +390,7 @@ export async function discoverProviderModels(provider: ProviderDef): Promise<Mod
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), MODEL_DISCOVERY_TIMEOUT_MS);
     const byId = new Map<string, ModelDef>();
-    let nextUrl: URL | null = modelListUrl(provider.baseUrl);
+    let nextUrl: URL | null = modelListUrl(baseUrl);
     try {
       for (let page = 0; nextUrl && page < MODEL_DISCOVERY_PAGE_LIMIT && byId.size < MODEL_DISCOVERY_RESULT_LIMIT; page += 1) {
         const response = await fetch(nextUrl, { method: "GET", headers, signal: controller.signal });

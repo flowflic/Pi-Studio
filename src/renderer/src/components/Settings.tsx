@@ -1078,14 +1078,14 @@ export function Settings() {
       return { ...d, providers: p };
     });
   };
-  const fetchProviderModels = async (provider: ProviderDef): Promise<ModelDef[]> => {
-    const result = (await window.pi.settings.discoverModels(provider as Record<string, unknown>)) as ModelDiscoveryResult;
+  const fetchProviderModels = async (provider: ProviderDef, providerId: string): Promise<ModelDef[]> => {
+    const result = (await window.pi.settings.discoverModels(provider as Record<string, unknown>, providerId)) as ModelDiscoveryResult;
     if (!result?.ok) throw new Error(result?.message || (language === "zh" ? "无法获取模型列表" : "Could not fetch the model list."));
     return result.models || [];
   };
   const discoverModelsForProvider = async (k: string, provider: ProviderDef) => {
     try {
-      const discovered = await fetchProviderModels(provider);
+      const discovered = await fetchProviderModels(provider, k);
       const added = mergeModels(provider.models || [], discovered).added;
       setDraft((current) => {
         const currentProvider = current.providers[k];
@@ -1151,7 +1151,7 @@ export function Settings() {
         api: newProvider.api,
         apiKey: newProvider.apiKey.trim() || undefined,
       };
-      const discovered = await fetchProviderModels(provider);
+      const discovered = await fetchProviderModels(provider, id);
       if (confirmAddProvider(discovered)) {
         pushToast("info", language === "zh" ? `已获取并添加 ${discovered.length} 个模型。` : `Fetched and added ${discovered.length} models.`);
       }

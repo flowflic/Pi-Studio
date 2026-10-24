@@ -1,6 +1,6 @@
 {
   "name": "pi-studio",
-  "version": "0.4.10",
+  "version": "0.4.11",
   "piRuntimeVersion": "1.3.0",
   "private": true,
   "license": "MIT",
@@ -42,7 +42,8 @@
     "test:provider-presets": "node scripts/test-provider-presets.cjs",
     "test:provider-presets-ui": "electron scripts/test-provider-presets-ui.cjs",
     "test:mcp-marketplace": "node scripts/test-mcp-marketplace.cjs",
-    "test:mcp-marketplace-ui": "electron scripts/test-mcp-marketplace-ui.cjs"
+    "test:mcp-marketplace-ui": "electron scripts/test-mcp-marketplace-ui.cjs",
+    "test:model-discovery": "node scripts/test-model-discovery.cjs"
   },
   "dependencies": {
     "@univerjs/preset-sheets-core": "1.0.3",
