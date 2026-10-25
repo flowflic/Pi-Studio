@@ -54,6 +54,21 @@ const near = (actual, expected, message) => assert.ok(Math.abs(actual - expected
     fs.writeFileSync(path.join(credentialDir,'models.json'),JSON.stringify({providers:{'my-go':{baseUrl:'https://opencode.ai/zen/go/v1',apiKey:'fixture-secret'},'unsafe':{baseUrl:'https://opencode.ai.attacker.example/zen/go/v1',apiKey:'do-not-send'}}}));
     const creds=quotas.discoverPlanCredentials(credentialDir);
     assert.equal(creds['opencode-go'].key,'fixture-secret');
+    assert.ok(!JSON.stringify(creds).includes('do-not-send'),'lookalike host never binds a credential');
+    // Regression: the provider quick-setup stores only a key under the provider
+    // id, so Go must be recognized from the id (and the /inference/go route)
+    // even when the entry carries no provider-level baseUrl.
+    fs.writeFileSync(path.join(credentialDir,'models.json'),JSON.stringify({providers:{'opencode-go':{apiKey:'preset-secret',models:[{id:'glm-5.3',baseUrl:'https://opencode.ai/inference/go/v1'}]}}}));
+    assert.equal(quotas.discoverPlanCredentials(credentialDir)['opencode-go'].key,'preset-secret','quick-setup key under the provider id is discovered');
+    fs.writeFileSync(path.join(credentialDir,'models.json'),JSON.stringify({providers:{'opencode-go':{apiKey:'id-only-secret'}}}));
+    assert.equal(quotas.discoverPlanCredentials(credentialDir)['opencode-go'].key,'id-only-secret','provider id alone binds OpenCode Go');
+    const kimiPlan=path.join(credentialDir,'kimi');
+    fs.mkdirSync(kimiPlan);
+    fs.writeFileSync(path.join(kimiPlan,'models.json'),JSON.stringify({providers:{'kimi-coding':{apiKey:'kimi-plan-secret'},'kimi':{baseUrl:'https://api.moonshot.cn/v1',apiKey:'pay-as-you-go'}}}));
+    const kimiCreds=quotas.discoverPlanCredentials(kimiPlan);
+    assert.equal(kimiCreds.kimi.key,'kimi-plan-secret','kimi-coding binds the coding plan');
+    assert.ok(!JSON.stringify(kimiCreds).includes('pay-as-you-go'),'a pay-as-you-go kimi provider is not treated as the coding plan');
+    fs.writeFileSync(path.join(credentialDir,'models.json'),JSON.stringify({providers:{'my-go':{baseUrl:'https://opencode.ai/zen/go/v1',apiKey:'fixture-secret'},'unsafe':{baseUrl:'https://opencode.ai.attacker.example/zen/go/v1',apiKey:'do-not-send'}}}));
     assert.ok(pricing.subscriptionProviders(path.join(credentialDir,'models.json')).has('my-go'));
     const go=quotas.parsePlanQuota('opencode-go',{usage:{rolling:{percent:25,resetsAt:'2026-10-01T00:00:00Z'},weekly:{percent:80},monthly:{percent:0}}});
     assert.deepEqual(go.map(w=>w.remainingPercent),[75,20,100]);
@@ -69,7 +84,7 @@ const near = (actual, expected, message) => assert.ok(Math.abs(actual - expected
     const claude=quotas.parsePlanQuota('anthropic',{five_hour:{utilization:10,resets_at:'2026-10-01T00:00:00Z'},seven_day:{utilization:70}});
     assert.deepEqual(claude.map(w=>w.remainingPercent),[90,30]);
     let calls=0;
-    const queried=await quotas.queryPlanQuota('opencode-go',{key:'test-secret',source:'fixture'},async(url,options)=>{calls++;assert.equal(url,'https://opencode.ai/zen/go/v1/usage');assert.equal(options.redirect,'error');assert.equal(options.headers.authorization,'Bearer test-secret');return new Response(JSON.stringify({usage:{rolling:{percent:25}}}),{status:200});});
+    const queried=await quotas.queryPlanQuota('opencode-go',{key:'test-secret',source:'fixture'},async(url,options)=>{calls++;assert.equal(url,'https://opencode.ai/inference/go/v1/usage');assert.equal(options.redirect,'error');assert.equal(options.headers.authorization,'Bearer test-secret');return new Response(JSON.stringify({usage:{rolling:{percent:25}}}),{status:200});});
     assert.equal(queried.status,'ok');assert.equal(calls,1);assert.ok(!JSON.stringify(queried).includes('test-secret'));
     const failed=await quotas.queryPlanQuota('opencode-go',{key:'test-secret',source:'fixture'},async()=>new Response('',{status:401}));
     assert.equal(failed.status,'error');assert.equal(failed.windows[0].remainingPercent,75,'refresh error retains timestamped previous data');

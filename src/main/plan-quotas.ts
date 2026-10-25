@@ -8,7 +8,7 @@ export type PlanId = "opencode-go" | "kimi" | "minimax" | "zai" | "anthropic";
 export interface QuotaWindow { name: string; usedPercent?: number; remainingPercent?: number; used?: number; remaining?: number; limit?: number; resetsAt?: string; unlimited?: boolean; text?: string }
 export interface PlanQuota { id: PlanId; label: string; status: "ok" | "missing" | "error"; message?: string; fetchedAt?: number; windows: QuotaWindow[]; credentialSource?: string }
 const specs = {
-  "opencode-go": { label: "OpenCode Go", envs: ["OPENCODE_GO_API_KEY"], urls: ["https://opencode.ai/zen/go/v1/usage"] },
+  "opencode-go": { label: "OpenCode Go", envs: ["OPENCODE_GO_API_KEY", "OPENCODE_API_KEY"], urls: ["https://opencode.ai/inference/go/v1/usage", "https://opencode.ai/zen/go/v1/usage"] },
   kimi: { label: "Kimi Code", envs: ["KIMI_CODING_API_KEY"], urls: ["https://api.kimi.com/coding/v1/usages", "https://api.kimi.com/coding/v1/usage"] },
   minimax: { label: "MiniMax Token Plan", envs: ["MINIMAX_API_KEY"], urls: ["https://www.minimax.cn/v1/token_plan/remains", "https://www.minimax.io/v1/token_plan/remains", "https://www.minimaxi.com/v1/token_plan/remains"] },
   zai: { label: "GLM Coding Plan", envs: ["ZAI_API_KEY", "BIGMODEL_API_KEY"], urls: ["https://open.bigmodel.cn/api/monitor/usage/quota/limit", "https://api.z.ai/api/monitor/usage/quota/limit"] },
@@ -22,23 +22,55 @@ function literalOrEnv(value: unknown): string | undefined {
   if (/^[A-Z][A-Z0-9_]*$/.test(name) || value.startsWith("${")) return;
   return value;
 }
+/**
+ * Bind a provider id to a subscription plan. The preset quick-setup stores only
+ * an API key under the provider id, relying on Pi's built-in endpoint, so the
+ * id is the only binding those entries have.
+ */
+function providerPlan(provider: string): PlanId | undefined {
+  const id = provider.toLowerCase();
+  if (/^opencode-go(?:$|[-_.])/.test(id)) return "opencode-go";
+  if (/^kimi[-_.]?cod(?:e|ing)(?:$|[-_.])/.test(id)) return "kimi";
+  if (/^minimax(?:$|[-_.])/.test(id)) return "minimax";
+  if (/^(?:zai|z-ai|zhipu|glm-coding)(?:$|[-_.])/.test(id)) return "zai";
+  return undefined;
+}
+
 function routePlan(baseUrl: unknown): PlanId | undefined {
   if (typeof baseUrl !== "string") return;
   try {
     const url = new URL(baseUrl);
     if (url.protocol !== "https:") return;
-    if (url.hostname === "opencode.ai" && /^\/zen\/go\/v1\/?$/.test(url.pathname)) return "opencode-go";
+    // OpenCode moved Go traffic to /inference/go; older configs still use /zen/go.
+    if (url.hostname === "opencode.ai" && /^\/(?:zen|inference)\/go(?:\/v1)?\/?$/.test(url.pathname)) return "opencode-go";
     if (url.hostname === "api.kimi.com" && url.pathname.startsWith("/coding")) return "kimi";
     if (["api.minimax.io", "api.minimax.chat", "api.minimax.cn"].includes(url.hostname)) return "minimax";
     if (["api.z.ai", "open.bigmodel.cn"].includes(url.hostname) && url.pathname.includes("/coding/")) return "zai";
   } catch { /* Invalid route has no credential binding. */ }
+}
+
+/** Resolve a plan from the provider entry itself or any of its model routes. */
+function entryPlan(provider: string, entry: any): PlanId | undefined {
+  const fromProvider = providerPlan(provider);
+  const fromEntry = routePlan(entry?.baseUrl);
+  if (fromProvider && fromEntry && fromProvider !== fromEntry) return fromEntry;
+  if (fromProvider) return fromProvider;
+  if (fromEntry) return fromEntry;
+  if (Array.isArray(entry?.models)) {
+    for (const model of entry.models) {
+      const id = routePlan(model?.baseUrl);
+      if (id) return id;
+    }
+  }
+  return undefined;
 }
 export function discoverPlanCredentials(agentDir = getAgentDir()): Partial<Record<PlanId, { key: string; source: string }>> {
   const found: Partial<Record<PlanId, { key: string; source: string }>> = {};
   const models = json(join(agentDir, "models.json"));
   const auth = json(join(agentDir, "auth.json"));
   for (const [provider, value] of Object.entries(models.providers || {}) as [string, any][]) {
-    const id = routePlan(value.baseUrl);
+    if (!value || typeof value !== "object") continue;
+    const id = entryPlan(provider, value);
     if (!id) continue;
     const key = literalOrEnv(value.apiKey) || literalOrEnv(auth[provider]?.key);
     if (key) found[id] = { key, source: provider };

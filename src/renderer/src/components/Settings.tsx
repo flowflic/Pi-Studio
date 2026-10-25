@@ -4,6 +4,7 @@ import type { ApiType, Diagnostics, ModelDef, ModelDiscoveryResult, ModelsFile, 
 import { cleanOutput, hasLibuvAssertion, lastLine, stripAnsi } from "../lib/update";
 import { reasoningLevelLabel } from "../lib/reasoning";
 import { translateUiText } from "../lib/i18n";
+import { AppUpdateNotes } from "./AppUpdateNotes";
 import { Archive, Check, Close, Edit, Plus, Refresh, Folder } from "./icons";
 import appIconUrl from "../../../../resources/icon.png";
 import { UsageSettings } from "./UsageSettings";
@@ -783,6 +784,9 @@ export function Settings() {
     source: string | null;
     releaseUrl: string | null;
     assetName: string | null;
+    releaseName?: string | null;
+    releaseNotes?: string | null;
+    releaseDate?: string | null;
     supported: boolean;
     installable: boolean;
     downloaded: boolean;
@@ -1662,6 +1666,16 @@ export function Settings() {
                     <div className="set-diag-k">{language === "zh" ? "来源" : "Source"}</div>
                     <div className="set-diag-v">{language === "zh" ? "GitHub 发布页" : "GitHub Releases"}</div>
                   </div>
+                  {appUpdateStatus?.hasUpdate && (
+                    <AppUpdateNotes
+                      language={language}
+                      version={appUpdateStatus.latest}
+                      releaseName={appUpdateStatus.releaseName}
+                      releaseNotes={appUpdateStatus.releaseNotes}
+                      releaseDate={appUpdateStatus.releaseDate}
+                      releaseUrl={appUpdateStatus.releaseUrl}
+                    />
+                  )}
                   <div className="set-diag-btns">
                     <button className="set-btn ghost" onClick={checkAppRelease} disabled={appUpdating}>
                       {appUpdating && appUpdateProgress?.stage === "checking"

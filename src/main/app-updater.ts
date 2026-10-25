@@ -20,6 +20,12 @@ export interface AppUpdateStatus {
   source: "github" | null;
   releaseUrl: string | null;
   assetName: string | null;
+  /** Release title published with the GitHub release. */
+  releaseName: string | null;
+  /** Release body (Markdown) so the user can read what changed before installing. */
+  releaseNotes: string | null;
+  /** ISO timestamp of the release, when GitHub provides one. */
+  releaseDate: string | null;
   /** Whether this platform has a supported installer asset. */
   supported: boolean;
   /** Whether the current process can install and restart the packaged app. */
@@ -92,6 +98,47 @@ function isWindowsUpdateInfo(info: UpdateInfo): boolean {
   return Boolean(updateAssetName(info) && /\.exe$/i.test(updateAssetName(info) || ""));
 }
 
+/** Release notes are Markdown; cap what the renderer has to parse. */
+const MAX_RELEASE_NOTES = 20_000;
+
+/**
+ * Normalize the release notes electron-updater reports. GitHub releases supply
+ * a Markdown body; some providers instead supply `{ version, note }[]`, where
+ * only the entry for the version being offered is relevant.
+ */
+export function normalizeReleaseNotes(info: UpdateInfo): string | null {
+  const raw = (info as UpdateInfo & { releaseNotes?: unknown }).releaseNotes;
+  const latest = normalizeVersion(info.version);
+  const parts: string[] = [];
+  if (typeof raw === "string") {
+    parts.push(raw);
+  } else if (Array.isArray(raw)) {
+    for (const entry of raw) {
+      if (!entry || typeof entry !== "object") continue;
+      const note = typeof (entry as any).note === "string" ? (entry as any).note : "";
+      const version = typeof (entry as any).version === "string" ? normalizeVersion((entry as any).version) : "";
+      // Keep the notes that belong to the released version (or unversioned notes).
+      if (version && version !== latest) continue;
+      if (note.trim()) parts.push(note);
+    }
+  }
+  const text = parts.join("\n\n").replace(/\r\n/g, "\n").trim();
+  if (!text) return null;
+  return text.length > MAX_RELEASE_NOTES ? text.slice(0, MAX_RELEASE_NOTES).trimEnd() + "\n\n…" : text;
+}
+
+function normalizeReleaseDate(info: UpdateInfo): string | null {
+  const raw = (info as UpdateInfo & { releaseDate?: unknown }).releaseDate;
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  const time = Date.parse(raw);
+  return Number.isFinite(time) ? new Date(time).toISOString() : null;
+}
+
+function normalizeReleaseName(info: UpdateInfo): string | null {
+  const raw = info.releaseName;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : null;
+}
+
 function statusFromInfo(current: string, info: UpdateInfo): AppUpdateStatus {
   const latest = normalizeVersion(info.version);
   const supported = isWindowsInstallerSupported() && isWindowsUpdateInfo(info);
@@ -105,6 +152,9 @@ function statusFromInfo(current: string, info: UpdateInfo): AppUpdateStatus {
     source: "github",
     releaseUrl: releaseUrl(latest),
     assetName: updateAssetName(info),
+    releaseName: normalizeReleaseName(info),
+    releaseNotes: normalizeReleaseNotes(info),
+    releaseDate: normalizeReleaseDate(info),
     supported,
     installable,
     downloaded: downloadedVersion === latest,
@@ -120,6 +170,9 @@ function emptyStatus(current: string, error?: string): AppUpdateStatus {
     source: null,
     releaseUrl: RELEASES_LATEST_URL,
     assetName: null,
+    releaseName: null,
+    releaseNotes: null,
+    releaseDate: null,
     supported: isWindowsInstallerSupported(),
     installable: isPackagedInstallable(),
     downloaded: false,

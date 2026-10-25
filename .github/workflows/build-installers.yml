@@ -33,7 +33,6 @@ jobs:
     # These are unsigned CI artifacts. Configure signing secrets and remove
     # this setting for production distribution builds.
     env:
-      PI_RUNTIME_VERSION: 1.3.0
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
     steps:
@@ -45,6 +44,15 @@ jobs:
         with:
           node-version: 24.14.0
           cache: npm
+
+      # package.json is the single source of truth for the bundled Pi version;
+      # the install and bundle steps below must never drift from it.
+      - name: Resolve pinned Pi runtime
+        id: pi-runtime
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').piRuntimeVersion")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Verify runner architecture
         env:
@@ -60,7 +68,7 @@ jobs:
         run: npm ci
 
       - name: Install the pinned Pi runtime
-        run: npm install --global --no-audit --no-fund @earendil-works/pi-coding-agent@${{ env.PI_RUNTIME_VERSION }}
+        run: npm install --global --no-audit --no-fund @earendil-works/pi-coding-agent@${{ steps.pi-runtime.outputs.version }}
 
       - name: Typecheck
         run: npm run typecheck
@@ -79,6 +87,8 @@ jobs:
         run: npm run test:permission
 
       - name: Bundle native Node.js and Pi runtime
+        env:
+          PI_RUNTIME_VERSION: ${{ steps.pi-runtime.outputs.version }}
         run: npm run bundle
 
       - name: Verify runtime manifest

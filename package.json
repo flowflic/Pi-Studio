@@ -1,7 +1,7 @@
 {
   "name": "pi-studio",
-  "version": "0.4.11",
-  "piRuntimeVersion": "1.3.0",
+  "version": "0.4.12",
+  "piRuntimeVersion": "1.4.0",
   "private": true,
   "license": "MIT",
   "author": {
@@ -23,6 +23,10 @@
     "test:usage-pricing": "node scripts/test-usage-pricing.cjs",
     "test:runtime-mcp": "node scripts/test-runtime-mcp.cjs",
     "test:core-updater": "node scripts/test-core-updater.cjs",
+    "test:app-updater-notes": "node scripts/test-app-updater-notes.cjs",
+    "test:update-notes-ui": "electron scripts/test-update-notes-ui.cjs",
+    "test:choices": "node scripts/test-choices.cjs",
+    "test:choices-ui": "electron scripts/test-choices-ui.cjs",
     "test:mcp-desktop": "node scripts/test-mcp-desktop.cjs",
     "test:settings-ui": "electron scripts/test-settings-ui.cjs",
     "test:office-preview": "electron scripts/test-office-preview.cjs",

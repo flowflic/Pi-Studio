@@ -4,12 +4,14 @@ import { Markdown } from "../lib/markdown";
 import { formatClock, formatTokens } from "../lib/format";
 import { selectFinalArtifacts } from "../lib/artifacts";
 import { parseHtmlReferenceText } from "../lib/html-reference";
+import { parseChoiceQuestions } from "../lib/choices";
 import { attachChatScroll } from "../lib/chat-scroll";
 import { useOutsideClose } from "../lib/useOutsideClose";
 import type { ContentBlock, HtmlElementReference, ToolRun, ViewMessage } from "../lib/types";
 import { Composer } from "./Composer";
 import { ReplyDuration } from "./ReplyDuration";
 import { ExtUiPromptCard } from "./ExtUiPromptCard";
+import { ChoicePrompt } from "./ChoicePrompt";
 import { Sidebar, PanelRight, Copy, ThumbUp, ThumbDown, Refresh, Edit, Folder, Files, Gauge, Branch, ChevronRight } from "./icons";
 import appIconUrl from "../../../../resources/icon.png";
 
@@ -325,6 +327,7 @@ export function Chat() {
           <div className="messages">
             {headGroups.map((g) => (
               <MessageGroup key={g.key} threadId={activeThreadId} group={g} toolRuns={thread.toolRuns} locked={thread.isStreaming}
+                interactive={!thread.isStreaming && g.role === "assistant" && g === lastGroup}
                 streaming={thread.isStreaming && g.role === "assistant" && g.items.some(m => m.replyStartedAt !== undefined && m.replyStartedAt === thread.replyStartedAt)} onPreviewImage={setPreviewImage} />
             ))}
             {streaming && streamingExtends && lastGroup && (
@@ -483,6 +486,7 @@ const MessageGroup = memo(MessageGroupInner, (prev, next) => {
     prev.group !== next.group ||
     prev.threadId !== next.threadId ||
     prev.locked !== next.locked ||
+    !!prev.interactive !== !!next.interactive ||
     !!prev.streaming !== !!next.streaming
     || prev.onPreviewImage !== next.onPreviewImage
   ) {
@@ -501,6 +505,7 @@ function MessageGroupInner({
   group,
   toolRuns,
   locked,
+  interactive,
   streaming,
   onPreviewImage,
 }: {
@@ -508,6 +513,8 @@ function MessageGroupInner({
   group: MsgGroup;
   toolRuns: Record<string, ToolRun>;
   locked?: boolean;
+  /** The newest settled assistant turn may turn question blocks into a menu. */
+  interactive?: boolean;
   streaming?: boolean;
   onPreviewImage: (src: string) => void;
 }) {
@@ -690,7 +697,7 @@ function MessageGroupInner({
         <img className="msg-app-icon" src={appIconUrl} alt="" />
       </div>
       <div className="msg-body">
-        {renderAssistantBlocks(group.items, toolRuns, language)}
+        {renderAssistantBlocks(group.items, toolRuns, language, { threadId, interactive })}
         {streaming && !hasBlocks && <span className="muted">思考中</span>}
         {streaming && <span className="streaming-dot" />}
         {last.errorMessage && <div style={{ color: "#c0392b", marginTop: 6 }}>{last.errorMessage}</div>}
@@ -795,7 +802,12 @@ function plainOfGroup(g: MsgGroup): string {
     .join("\n\n");
 }
 
-function renderAssistantBlocks(items: ViewMessage[], toolRuns: Record<string, ToolRun>, language: "en" | "zh"): ReactNode[] {
+function renderAssistantBlocks(
+  items: ViewMessage[],
+  toolRuns: Record<string, ToolRun>,
+  language: "en" | "zh",
+  options: { threadId: string; interactive?: boolean },
+): ReactNode[] {
   const toolCount = items
     .flatMap((message) => message.blocks || [])
     .filter((block) => block.type === "toolCall")
@@ -814,14 +826,41 @@ function renderAssistantBlocks(items: ViewMessage[], toolRuns: Record<string, To
           </div>,
         );
       }
-      nodes.push(<BlockView key={key} block={block} toolRuns={toolRuns} language={language} />);
+      nodes.push(<BlockView key={key} block={block} toolRuns={toolRuns} language={language} interactive={options.interactive} threadId={options.threadId} />);
     });
   });
   return nodes;
 }
 
-function BlockView({ block, toolRuns, language }: { block: ContentBlock; toolRuns: Record<string, ToolRun>; language: "en" | "zh" }) {
-  if (block.type === "text") return <Markdown text={block.text} />;
+function BlockView({
+  block,
+  toolRuns,
+  language,
+  interactive,
+  threadId,
+}: {
+  block: ContentBlock;
+  toolRuns: Record<string, ToolRun>;
+  language: "en" | "zh";
+  interactive?: boolean;
+  threadId: string;
+}) {
+  if (block.type === "text") {
+    // Only the newest settled reply becomes a menu; history keeps its exact
+    // Markdown so re-reading a transcript never shows stale, active buttons.
+    if (interactive) {
+      const choices = parseChoiceQuestions(block.text);
+      if (choices.questions.length > 0) {
+        return (
+          <>
+            {choices.remainder.trim() && <Markdown text={choices.remainder} />}
+            <ChoicePrompt threadId={threadId} questions={choices.questions} />
+          </>
+        );
+      }
+    }
+    return <Markdown text={block.text} />;
+  }
   if (block.type === "thinking") return <Thinking text={block.thinking} language={language} />;
   const run = toolRuns[block.id] || (block.contentIndex === undefined ? undefined : Object.values(toolRuns).find((candidate) => candidate.contentIndex === block.contentIndex));
   return <ToolCard id={block.id} name={effectiveToolName(block.name, run)} blockArgs={block.arguments} run={run} language={language} />;

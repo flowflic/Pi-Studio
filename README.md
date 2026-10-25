@@ -37,6 +37,9 @@ The current interface brings the main workspace, plugin manager, public Skills H
 
 ## Recent additions
 
+- **Release notes in app updates** — When Settings → Update finds a newer release, it shows that version's notes (from the GitHub release) so you can see what changed before downloading and installing. A link to the release page is shown when no notes are attached.
+- **Clickable choice menus** — When Pi asks you to pick between options with a "Q1: question / Options:" block, the chat renders it as a card: click an option instead of typing its number. Every question also offers "Other (custom plan)" for when none of the proposals work, and the composed answer is sent as your reply.
+- **Pi Agent 1.4.0 with MCP** — Ships the official MCP support, Codemode and tool search. Add or edit `mcpServers` JSON, enable, disable or remove servers, check their connection and tools, and sign in or out of OAuth in Settings → MCP. stdio and Streamable HTTP are supported; run `/reload` (or reopen the chat) after saving. Chats keep nested tool-call records, extension statuses and text components. 1.4.0 also brings compaction and branch summaries that use the model's output limit, Codemode scripts that queue for a free worker (`PI_CODEMODE_MAX_WORKERS` raises the limit), image input for classifier models, and a schema-generated `models.json` configuration reference.
 - **Quick setup for built-in providers** — A panel at the top of Settings → Models & providers covers OpenCode Go and Zen, Z.ai GLM Coding Plan (China and global), Qwen Token Plan (China, global, individual), MiniMax Token Plan (China and global), DeepSeek, Kimi For Coding, Moonshot / Kimi API (China and global) and Xiaomi MiMo Token Plan. Pick a provider, paste an API key, optionally test the connection, and save: Pi supplies the endpoint, protocol and model catalog. The key is stored in `models.json` under that provider's `apiKey` without overriding Pi's endpoint or built-in models, and `auth.json` is never touched. The panel reports whether a stored `auth.json` credential takes precedence over the key.
 - **Consistent model lists** — For providers with an explicit model list, the thread picker shows only the saved, available models instead of merging in the provider's built-in catalog. Saving settings refreshes open threads.
 - **MCP marketplace (Glama)** — A marketplace panel in Settings → MCP reads the [Glama MCP directory](https://glama.ai/mcp/servers). Search by keyword, filter by category, language or hosting, and install: the panel lifts the install example from the server's page into an editable command, arguments and environment variables, previews the generated `mcp.json` entry, and requires explicit confirmation before replacing an existing name. Installs write to Pi's shared `mcp.json`; run `/reload` to load the tools. The panel credits Glama and links every record back to its listing. A sidebar shortcut under Plugins opens this page directly.
@@ -74,7 +77,7 @@ Each installer contains a native pinned Node.js + Pi runtime. On first launch, P
 - Install an isolated Pi coding agent runtime in the project for development and packaging:
 
 ```powershell
-npm install --global --prefix .runtime-source @earendil-works/pi-coding-agent@1.3.0
+npm install --global --prefix .runtime-source @earendil-works/pi-coding-agent@1.4.0
 ```
 
 ## Development
@@ -95,7 +98,7 @@ npm run dist              # Bundle, build, and create the installer
 npm run pack              # Create an unpacked directory build
 ```
 
-Build output is written to `release/`. `npm run dist` creates the Electron installer with the runtime archive embedded inside it; the generated archive in `release/` is retained for QA and does not need to be uploaded separately. The repository pins Pi runtime `1.3.0` in `package.json`. Packaging prefers `.runtime-source` and also accepts a matching global installation. To package from a specific local installation, set `PI_PACKAGE_DIR` to its package directory.
+Build output is written to `release/`. `npm run dist` creates the Electron installer with the runtime archive embedded inside it; the generated archive in `release/` is retained for QA and does not need to be uploaded separately. The repository pins Pi runtime `1.4.0` in `package.json`. Packaging prefers `.runtime-source` and also accepts a matching global installation. To package from a specific local installation, set `PI_PACKAGE_DIR` to its package directory.
 
 Settings → Token usage offers a green heatmap with daily, weekly and cumulative views, date filters, input/output/cache totals, model breakdowns and estimated costs. Usage comes from saved sessions with forked records deduplicated.
 
