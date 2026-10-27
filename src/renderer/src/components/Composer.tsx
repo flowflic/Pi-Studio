@@ -100,6 +100,8 @@ export function Composer({ threadId }: { threadId: string }) {
   const models = useStore((s) => s.threads[threadId]?.models);
   const levels = useStore((s) => s.threads[threadId]?.levels);
   const model = useStore((s) => s.threads[threadId]?.model);
+  const modelPicked = useStore((s) => s.threads[threadId]?.modelPicked);
+  const ready = useStore((s) => s.threads[threadId]?.ready);
   const thinking = useStore((s) => s.threads[threadId]?.thinking);
   const cwd = useStore((s) => s.threads[threadId]?.cwd || "");
   const isDraftTask = useStore(
@@ -353,7 +355,18 @@ export function Composer({ threadId }: { threadId: string }) {
     return Array.from(grouped, ([provider, providerModels]) => ({ provider, models: providerModels }));
   }, [modelList]);
   const levelList = (levels || []).filter((l) => l !== "off");
-  const thinkLabel = thinking === "off" ? "" : reasoningLevelLabel(thinking, language);
+  // thread:open supplies a provisional model from models.json before Pi has
+  // loaded its extensions. Until Pi reports the session's real model (or the
+  // user picks one), showing that guess would claim a choice Studio cannot yet
+  // honor.
+  const modelPending = !ready && !modelPicked;
+  const selectedModel = modelPending ? null : model;
+  const modelLabel = modelPending
+    ? language === "zh"
+      ? "正在确定模型…"
+      : "Determining model…"
+    : modelShort(model);
+  const thinkLabel = modelPending || thinking === "off" ? "" : reasoningLevelLabel(thinking, language);
   const mappedThinkingLevel = (level: string) => {
     const mapped = model?.thinkingLevelMap?.[level];
     return mapped && mapped !== level ? mapped : null;
@@ -726,7 +739,7 @@ export function Composer({ threadId }: { threadId: string }) {
           <div className="cb-right">
             <div className="pill composer-model-pill" ref={modelRef}>
               <button className="pill-btn" onClick={() => setModelOpen((v) => !v)} title="模型与思考等级">
-                {modelShort(model)}
+                {modelLabel}
                 {thinkLabel && <span className="pill-think-tag">{thinkLabel}</span>}
                 <span className="pill-caret">▾</span>
               </button>
@@ -736,7 +749,7 @@ export function Composer({ threadId }: { threadId: string }) {
                   {modelList.length === 0 && <div className="ft-empty">{language === "zh" ? "无可用模型（请检查认证）" : "No models available (check auth)"}</div>}
                   {modelGroups.map((group) => {
                     const expanded = expandedProviders[group.provider] === true;
-                    const active = model?.provider === group.provider;
+                    const active = selectedModel?.provider === group.provider;
                     return (
                       <div className={`model-provider-group ${expanded ? "expanded" : ""}`} key={group.provider}>
                         <button
@@ -760,7 +773,7 @@ export function Composer({ threadId }: { threadId: string }) {
                               <button
                                 type="button"
                                 key={`${m.provider}/${m.id}`}
-                                className={`opt ${model?.id === m.id && model?.provider === m.provider ? "active" : ""}`}
+                                className={`opt ${selectedModel?.id === m.id && selectedModel?.provider === m.provider ? "active" : ""}`}
                                 onClick={() => setModel(threadId, m.provider, m.id)}
                               >
                                 <span className="o1">{m.name || m.id}</span>

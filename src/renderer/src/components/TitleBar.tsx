@@ -95,6 +95,9 @@ export function TitleBar() {
   ];
 
   const active = activeThreadId ? threads[activeThreadId] : null;
+  // The model shown before Pi reports the session model is only a guess from
+  // models.json; do not present it as the active model.
+  const activeModelPending = !!active && !active.ready && !active.modelPicked;
   const activeName = active
     ? active.sessionName || active.cwd.split(/[\\/]/).filter(Boolean).pop() || active.cwd
     : "";
@@ -103,9 +106,11 @@ export function TitleBar() {
         active.error
           ? language === "zh" ? "连接失败" : "connection failed"
           : active.connected
-            ? active.model
-              ? modelShort(active.model)
-              : language === "zh" ? "就绪" : "ready"
+            ? activeModelPending
+              ? language === "zh" ? "正在确定模型…" : "determining model…"
+              : active.model
+                ? modelShort(active.model)
+                : language === "zh" ? "就绪" : "ready"
             : language === "zh" ? "连接中…" : "connecting…"
       }`
     : runtime?.ok
