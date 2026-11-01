@@ -25,6 +25,8 @@ export interface PluginPackage {
   name: string;
   kind: "npm" | "git" | "local";
   enabled: boolean;
+  /** Installed version for npm packages, read from the Pi npm directory. */
+  version?: string;
 }
 
 export interface SkillInfo {
@@ -78,12 +80,40 @@ function nameOf(source: string): string {
   return seg.replace(/\.git$/, "");
 }
 
+/** Full npm name for a source such as `npm:@scope/name@1.2.3`. */
+export function npmPackageName(source: string): string | null {
+  if (!source.startsWith("npm:")) return null;
+  const spec = source.slice("npm:".length).trim();
+  if (!spec) return null;
+  const versionAt = spec.indexOf("@", 1);
+  const name = versionAt > 0 ? spec.slice(0, versionAt) : spec;
+  return name || null;
+}
+
+function installedNpmVersion(name: string): string | undefined {
+  try {
+    const raw = readFileSync(join(getAgentDir(), "npm", "node_modules", ...name.split("/"), "package.json"), "utf8");
+    const version = JSON.parse(raw)?.version;
+    return typeof version === "string" ? version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function listPackages(): PluginPackage[] {
   const settings = readSettings();
   const packages = (settings.packages as PackageEntry[] | undefined) || [];
   return packages.map((e) => {
     const source = entrySource(e);
-    return { source, name: nameOf(source), kind: kindOf(source), enabled: entryEnabled(e) };
+    const kind = kindOf(source);
+    const npmName = kind === "npm" ? npmPackageName(source) : null;
+    return {
+      source,
+      name: nameOf(source),
+      kind,
+      enabled: entryEnabled(e),
+      version: npmName ? installedNpmVersion(npmName) : undefined,
+    };
   });
 }
 

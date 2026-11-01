@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from "electron";
-import type { SkillHubSkill } from "../renderer/src/lib/types";
+import type { PiMarketPackageDetail, PiMarketPage, SkillHubSkill } from "../renderer/src/lib/types";
 
 /**
  * The renderer talks to the main process exclusively through this surface.
@@ -60,6 +60,9 @@ const api = {
     getSkills: (cwd?: string) => ipcRenderer.invoke("plugins:getSkills", cwd),
     setSkillEnabled: (path: string, enabled: boolean) => ipcRenderer.invoke("plugins:setSkillEnabled", { path, enabled }),
     updatePackages: (source?: string) => ipcRenderer.invoke("plugins:updatePackages", source),
+    searchPackageMarket: (args: { query?: string; from?: number; size?: number }) =>
+      ipcRenderer.invoke("plugins:marketSearch", args) as Promise<PiMarketPage>,
+    getPackageMarketDetail: (name: string) => ipcRenderer.invoke("plugins:marketDetail", name) as Promise<PiMarketPackageDetail>,
     getSkillsHubLeaderboard: () => ipcRenderer.invoke("skillsHub:leaderboard"),
     searchSkillsHub: (query: string) => ipcRenderer.invoke("skillsHub:search", query),
     getSkillDetails: (skill: SkillHubSkill) => ipcRenderer.invoke("skillsHub:detail", skill),

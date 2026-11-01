@@ -56,6 +56,7 @@ import {
   setSkillEnabled,
 } from "./plugins";
 import { getSkillDetails, getSkillsHubLeaderboard, installSkillFromHub, searchSkillsHub } from "./skills-hub";
+import { getPiMarketPackageDetail, searchPiMarketPackages } from "./package-market";
 import { removeAutomationTask, runTaskNow, startScheduler } from "./automation";
 import { loadOrCreateIdentity, opaqueId } from "./remote/identity";
 import { RemoteHost } from "./remote/host";
@@ -63,6 +64,7 @@ import { FilePreviewService, ProjectService, RemoteEventHub, ThreadService } fro
 import { RemoteService, type RemoteBackend } from "./remote/service";
 import {
   createSystemNotificationCenter,
+  isBlockingPrompt,
   isSandboxApprovalRequest,
   sandboxOperationFromTitle,
   type SystemNotificationCenter,
@@ -358,12 +360,11 @@ function createHandle(
     },
     onExtUi: (r) => {
       send("pi:extui", { threadId: id, request: r });
+      const language = getConfig().language === "zh" ? "zh" : "en";
       if (isSandboxApprovalRequest(r)) {
-        systemNotifications?.notifySandboxApproval(
-          id,
-          getConfig().language === "zh" ? "zh" : "en",
-          sandboxOperationFromTitle((r as any)?.title, getConfig().language === "zh" ? "zh" : "en"),
-        );
+        systemNotifications?.notifySandboxApproval(id, language, sandboxOperationFromTitle((r as any)?.title, language));
+      } else if (isBlockingPrompt(r)) {
+        systemNotifications?.notifyPrompt(id, language, r);
       }
     },
     onExit: (info) => {
@@ -2742,6 +2743,10 @@ export function registerIpc(getWin: () => BrowserWindow | null): void {
     }
     return { ok: res.code === 0, code: res.code, output: (res.stdout + res.stderr).trim() };
   });
+  ipcMain.handle("plugins:marketSearch", (_e, args?: { query?: string; from?: number; size?: number }) =>
+    searchPiMarketPackages({ query: args?.query, from: args?.from, size: args?.size }),
+  );
+  ipcMain.handle("plugins:marketDetail", (_e, name: string) => getPiMarketPackageDetail(typeof name === "string" ? name : ""));
   ipcMain.handle("skillsHub:leaderboard", () => getSkillsHubLeaderboard());
   ipcMain.handle("skillsHub:search", (_e, query: string) => searchSkillsHub(typeof query === "string" ? query : ""));
   ipcMain.handle("skillsHub:detail", (_e, skill: Parameters<typeof getSkillDetails>[0]) => getSkillDetails(skill));

@@ -5706,6 +5706,66 @@ mark.hl {
   color: var(--accent);
   cursor: default;
 }
+.skills-hub-install.pkg-market-update,
+.skills-hub-detail-install.pkg-market-update {
+  border-color: var(--border-strong);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.skills-hub-install.pkg-market-update:hover:not(:disabled),
+.skills-hub-detail-install.pkg-market-update:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.pkg-market-desc {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 4px;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.pkg-market-more {
+  width: 100%;
+  justify-content: center;
+  margin: 2px 0 10px;
+}
+.pkg-market-types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+.pkg-market-type {
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 650;
+}
+.pkg-market-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 13px;
+}
+.pkg-market-meta > div > div {
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+.pkg-market-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
 .skills-hub-detail {
   display: flex;
   flex-direction: column;
@@ -5733,6 +5793,7 @@ mark.hl {
   flex: 0 0 auto;
 }
 .skills-hub-detail-title {
+  min-width: 0;
   overflow: hidden;
   color: var(--text);
   font-size: 17px;

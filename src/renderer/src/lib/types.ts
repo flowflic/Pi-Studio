@@ -50,6 +50,46 @@ export interface PluginPackage {
   kind: "npm" | "git" | "local";
   /** True when the package loads its resources; false when disabled via autoload=false. */
   enabled: boolean;
+  /** Installed version for npm packages. */
+  version?: string;
+}
+
+export type PiPackageType = "extension" | "skill" | "prompt" | "theme";
+
+/** One entry in the Pi package catalog (pi.dev/packages). */
+export interface PiMarketPackage {
+  name: string;
+  version: string;
+  description: string;
+  author?: string;
+  license?: string;
+  updatedAt?: string;
+  monthlyDownloads: number;
+  weeklyDownloads: number;
+  repositoryUrl?: string;
+  npmUrl: string;
+  piUrl: string;
+}
+
+/** Extra metadata fetched for the selected catalog package. */
+export interface PiMarketPackageDetail {
+  name: string;
+  version: string;
+  description: string;
+  license?: string;
+  homepage?: string;
+  repositoryUrl?: string;
+  types: PiPackageType[];
+  unpackedSize?: number;
+  dependencies: string[];
+  peerDependencies: string[];
+  deprecated?: string;
+}
+
+export interface PiMarketPage {
+  items: PiMarketPackage[];
+  from: number;
+  exhausted: boolean;
 }
 
 /** A standalone skill discovered in a skills directory. */

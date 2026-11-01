@@ -3,6 +3,7 @@ import { useStore } from "../store";
 import type { SkillHubDetail, SkillHubSkill, SkillInfo } from "../lib/types";
 import { Markdown } from "../lib/markdown";
 import { AppStore, Check, Close, Plus, At, Refresh, Search } from "./icons";
+import { PackageMarket } from "./PackageMarket";
 
 function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
@@ -273,10 +274,10 @@ export function PluginsPanel() {
   const [updatingAll, setUpdatingAll] = useState(false);
   const [updatingOne, setUpdatingOne] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [hubOpen, setHubOpen] = useState(false);
+  const [view, setView] = useState<"plugins" | "skills" | "market">("plugins");
 
   const dismiss = () => {
-    setHubOpen(false);
+    setView("plugins");
     close();
   };
 
@@ -326,26 +327,43 @@ export function PluginsPanel() {
       <div className="plugins-modal" onMouseDown={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
         <header className="plugins-head">
           <div className="plugins-head-title">
-            <span className="set-brand-mark">
-              {hubOpen ? <AppStore size={18} /> : <At size={18} />}
-            </span>
+            <span className="set-brand-mark">{view === "plugins" ? <At size={18} /> : <AppStore size={18} />}</span>
             <div>
-              <div className="set-brand-title">{hubOpen ? (zh ? "技能中心" : "Skills Hub") : zh ? "插件" : "Plugins"}</div>
+              <div className="set-brand-title">
+                {view === "market" ? (zh ? "插件市场" : "Package Market") : view === "skills" ? (zh ? "技能中心" : "Skills Hub") : zh ? "插件" : "Plugins"}
+              </div>
               <div className="set-brand-sub">
-                {hubOpen ? (zh ? "浏览并安装 skills.sh 公开技能" : "Browse and install public skills from skills.sh") : zh ? "管理 pi 的扩展包与技能" : "Manage Pi extension packages and skills"}
+                {view === "market"
+                  ? zh
+                    ? "浏览、搜索并安装 pi.dev/packages 的官方插件"
+                    : "Browse, search, and install packages from pi.dev/packages"
+                  : view === "skills"
+                    ? zh
+                      ? "浏览并安装 skills.sh 公开技能"
+                      : "Browse and install public skills from skills.sh"
+                    : zh
+                      ? "管理 pi 的扩展包与技能"
+                      : "Manage Pi extension packages and skills"}
               </div>
             </div>
           </div>
           <div className="plugins-head-actions">
-            {hubOpen ? (
-              <button className="skills-hub-back" type="button" onClick={() => setHubOpen(false)}>
+            {view !== "plugins" && (
+              <button className="skills-hub-back" type="button" onClick={() => setView("plugins")}>
                 ← {zh ? "插件" : "Plugins"}
               </button>
-            ) : (
-              <button className="skills-hub-entry" type="button" onClick={() => setHubOpen(true)}>
-                <AppStore size={14} />
-                {zh ? "技能中心" : "Skills Hub"}
-              </button>
+            )}
+            {view === "plugins" && (
+              <>
+                <button className="skills-hub-entry" type="button" onClick={() => setView("market")}>
+                  <AppStore size={14} />
+                  {zh ? "插件市场" : "Package Market"}
+                </button>
+                <button className="skills-hub-entry" type="button" onClick={() => setView("skills")}>
+                  <AppStore size={14} />
+                  {zh ? "技能中心" : "Skills Hub"}
+                </button>
+              </>
             )}
             <button className="set-iconbtn" title={zh ? "关闭" : "Close"} onClick={dismiss}>
               <Close size={16} />
@@ -353,7 +371,12 @@ export function PluginsPanel() {
           </div>
         </header>
 
-        {hubOpen ? <SkillsHubPanel installedSkills={skills} language={language} /> : <div className="plugins-body">
+        {view === "skills" ? (
+          <SkillsHubPanel installedSkills={skills} language={language} />
+        ) : view === "market" ? (
+          <PackageMarket packages={packages} language={language} />
+        ) : (
+          <div className="plugins-body">
           <div className="muted plugins-note">
             {zh
               ? "开关写入 ~/.pi/agent/settings.json，与终端 pi 共享；显示 ~/.pi/agent/skills 和 ~/.agents/skills，Pi 目录同名技能优先。"
@@ -415,6 +438,7 @@ export function PluginsPanel() {
                     {p.name}
                   </span>
                   <span className="plugins-kind">{p.kind === "local" ? (zh ? "本地" : KIND_LABEL[p.kind]) : KIND_LABEL[p.kind] || p.kind}</span>
+                  {p.version && <span className="plugins-kind">v{p.version}</span>}
                   {!p.enabled && <span className="plugins-off">{zh ? "已停用" : "Disabled"}</span>}
                 </div>
                 <div className="plugins-row-sub" title={p.source}>
@@ -475,7 +499,8 @@ export function PluginsPanel() {
                 : "Disabling a skill renames its entry file to *.disabled (reversible). Refresh after adding new files."}
             </div>
           </section>
-        </div>}
+        </div>
+        )}
       </div>
     </div>
   );

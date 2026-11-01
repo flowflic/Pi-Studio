@@ -8,8 +8,16 @@ export interface TaskCompletionNotification {
   reply?: string;
 }
 
+export interface PromptNotificationRequest {
+  method?: unknown;
+  title?: unknown;
+  message?: unknown;
+  options?: unknown;
+}
+
 export interface SystemNotificationCenter {
   notifySandboxApproval(threadId: string, language: NotificationLanguage, operation?: string): void;
+  notifyPrompt(threadId: string, language: NotificationLanguage, request: PromptNotificationRequest): void;
   notifyTaskComplete(threadId: string, details: TaskCompletionNotification): void;
 }
 
@@ -36,6 +44,48 @@ export function sandboxOperationFromTitle(title: unknown, language: Notification
   const firstLine = title.split(/\r?\n/, 1)[0] || "";
   const operation = firstLine.replace(/^(?:Sandbox\s+(?:authorization|请求授权)|沙盒\s*请求授权|请求授权)\s*[:：]\s*/i, "").trim();
   return truncateNotificationText(operation || (language === "zh" ? "命令行" : "Shell"), 80);
+}
+
+/** Dialog methods that block the agent until the user answers. */
+export function isBlockingPrompt(request: unknown): boolean {
+  if (!request || typeof request !== "object") return false;
+  const method = (request as { method?: unknown }).method;
+  return method === "select" || method === "confirm" || method === "input" || method === "editor";
+}
+
+export function promptNotificationText(
+  request: unknown,
+  language: NotificationLanguage,
+): { title: string; subtitle?: string; body: string } {
+  const value = (request && typeof request === "object" ? request : {}) as PromptNotificationRequest;
+  const method = typeof value.method === "string" ? value.method : "";
+  const zh = language === "zh";
+  const heading =
+    method === "confirm"
+      ? zh
+        ? "需要确认"
+        : "Confirmation required"
+      : method === "input" || method === "editor"
+        ? zh
+          ? "需要你的输入"
+          : "Input required"
+        : zh
+          ? "需要你选择"
+          : "Choice required";
+  const firstLine = typeof value.title === "string" ? value.title.split(/\r?\n/, 1)[0] || "" : "";
+  const subtitle = truncateNotificationText(firstLine, 80) || undefined;
+  const message = truncateNotificationText(value.message, 200);
+  const options = Array.isArray(value.options)
+    ? value.options
+        .filter((option): option is string => typeof option === "string")
+        .map((option) => option.trim())
+        .filter(Boolean)
+    : [];
+  const body =
+    message ||
+    truncateNotificationText(options.slice(0, 3).join(" · "), 200) ||
+    (zh ? "点击此提醒返回 Pi Studio 处理。" : "Click this notification to return to Pi Studio.");
+  return { title: `Pi Studio · ${heading}`, subtitle, body };
 }
 
 function revealThread(getWindow: WindowGetter, threadId: string): void {
@@ -103,6 +153,16 @@ export function createSystemNotificationCenter(getWindow: WindowGetter): SystemN
           language === "zh"
             ? `沙盒正在等待确认（${label}）。点击此提醒返回 Pi Studio。`
             : `Sandbox is waiting for approval (${label}). Click to return to Pi Studio.`,
+        persistent: true,
+      });
+    },
+
+    notifyPrompt(threadId, language, request) {
+      const content = promptNotificationText(request, language);
+      show(threadId, language, {
+        title: content.title,
+        subtitle: content.subtitle,
+        body: content.body,
         persistent: true,
       });
     },
